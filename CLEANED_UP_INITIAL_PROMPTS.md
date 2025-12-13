@@ -17,7 +17,7 @@ This is a transcript of the Claude Code session where the SLB project was concei
 │                 * ▝▜█████▛▘ *                 │ No recent activity                                                │
 │                  *  ▘▘ ▝▝  *                  │                                                                   │
 │                                               │                                                                   │
-│    Opus 4.5 · Claude Max · Gracie Terzianq    │                                                                   │
+│    Opus 4.5 · Claude Max ·                    │                                                                   │
 │   /data/projects/simultaneous_launch_button   │                                                                   │
 ╰───────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
