@@ -185,3 +185,318 @@ func TestTransitionRejectsSameState(t *testing.T) {
 		t.Fatalf("expected error for same-state transition")
 	}
 }
+
+func TestTransitionError_Error(t *testing.T) {
+	err := &TransitionError{
+		From:    db.StatusPending,
+		To:      db.StatusExecuted,
+		Message: "transition not allowed",
+	}
+	got := err.Error()
+	want := "invalid transition from pending to executed: transition not allowed"
+	if got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
+	}
+}
+
+func TestValidateTransition_TerminalState(t *testing.T) {
+	err := ValidateTransition(db.StatusExecuted, db.StatusPending)
+	if err == nil {
+		t.Fatal("expected error for transition from terminal state")
+	}
+	terr, ok := err.(*TransitionError)
+	if !ok {
+		t.Fatalf("expected TransitionError, got %T", err)
+	}
+	if terr.From != db.StatusExecuted || terr.To != db.StatusPending {
+		t.Errorf("unexpected error fields: from=%q to=%q", terr.From, terr.To)
+	}
+}
+
+func TestValidateTransition_InvalidTransition(t *testing.T) {
+	err := ValidateTransition(db.StatusPending, db.StatusExecuting)
+	if err == nil {
+		t.Fatal("expected error for invalid transition")
+	}
+}
+
+func TestValidateTransition_ValidTransition(t *testing.T) {
+	err := ValidateTransition(db.StatusPending, db.StatusApproved)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestTransitionWithReason(t *testing.T) {
+	req := &db.Request{Status: db.StatusPending}
+	err := TransitionWithReason(req, db.StatusApproved, "manually approved by admin")
+	if err != nil {
+		t.Fatalf("TransitionWithReason() error = %v", err)
+	}
+	if req.Status != db.StatusApproved {
+		t.Errorf("Status = %q, want %q", req.Status, db.StatusApproved)
+	}
+}
+
+func TestTransitionWithReason_Invalid(t *testing.T) {
+	req := &db.Request{Status: db.StatusPending}
+	err := TransitionWithReason(req, db.StatusExecuted, "invalid")
+	if err == nil {
+		t.Fatal("expected error for invalid transition")
+	}
+}
+
+func TestGetValidTransitions(t *testing.T) {
+	tests := []struct {
+		name string
+		from db.RequestStatus
+		want []db.RequestStatus
+	}{
+		{"empty->pending", "", []db.RequestStatus{db.StatusPending}},
+		{"pending", db.StatusPending, []db.RequestStatus{db.StatusApproved, db.StatusRejected, db.StatusCancelled, db.StatusTimeout}},
+		{"approved", db.StatusApproved, []db.RequestStatus{db.StatusExecuting, db.StatusCancelled}},
+		{"executing", db.StatusExecuting, []db.RequestStatus{db.StatusExecuted, db.StatusExecutionFailed, db.StatusTimedOut}},
+		{"timeout", db.StatusTimeout, []db.RequestStatus{db.StatusEscalated}},
+		{"terminal (executed)", db.StatusExecuted, nil},
+		{"terminal (rejected)", db.StatusRejected, nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := GetValidTransitions(tt.from)
+			if len(got) != len(tt.want) {
+				t.Fatalf("GetValidTransitions(%q) = %v, want %v", tt.from, got, tt.want)
+			}
+			for i, v := range got {
+				if v != tt.want[i] {
+					t.Fatalf("GetValidTransitions(%q)[%d] = %q, want %q", tt.from, i, v, tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestIsPending(t *testing.T) {
+	tests := []struct {
+		status db.RequestStatus
+		want   bool
+	}{
+		{db.StatusPending, true},
+		{db.StatusApproved, false},
+		{db.StatusExecuting, false},
+		{db.StatusExecuted, false},
+	}
+
+	for _, tt := range tests {
+		if got := IsPending(tt.status); got != tt.want {
+			t.Errorf("IsPending(%q) = %v, want %v", tt.status, got, tt.want)
+		}
+	}
+}
+
+func TestIsApproved(t *testing.T) {
+	tests := []struct {
+		status db.RequestStatus
+		want   bool
+	}{
+		{db.StatusApproved, true},
+		{db.StatusPending, false},
+		{db.StatusExecuting, false},
+		{db.StatusExecuted, false},
+	}
+
+	for _, tt := range tests {
+		if got := IsApproved(tt.status); got != tt.want {
+			t.Errorf("IsApproved(%q) = %v, want %v", tt.status, got, tt.want)
+		}
+	}
+}
+
+func TestIsComplete(t *testing.T) {
+	tests := []struct {
+		status db.RequestStatus
+		want   bool
+	}{
+		{db.StatusExecuted, true},
+		{db.StatusExecutionFailed, true},
+		{db.StatusRejected, true},
+		{db.StatusCancelled, true},
+		{db.StatusTimedOut, true},
+		{db.StatusPending, false},
+		{db.StatusApproved, false},
+		{db.StatusExecuting, false},
+	}
+
+	for _, tt := range tests {
+		if got := IsComplete(tt.status); got != tt.want {
+			t.Errorf("IsComplete(%q) = %v, want %v", tt.status, got, tt.want)
+		}
+	}
+}
+
+func TestRequiresApproval(t *testing.T) {
+	tests := []struct {
+		name             string
+		status           db.RequestStatus
+		minApprovals     int
+		currentApprovals int
+		want             bool
+	}{
+		{"pending needs more", db.StatusPending, 2, 1, true},
+		{"pending has enough", db.StatusPending, 2, 2, false},
+		{"pending has more than enough", db.StatusPending, 1, 3, false},
+		{"not pending", db.StatusApproved, 2, 0, false},
+		{"pending needs zero", db.StatusPending, 0, 0, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &db.Request{Status: tt.status, MinApprovals: tt.minApprovals}
+			if got := RequiresApproval(req, tt.currentApprovals); got != tt.want {
+				t.Errorf("RequiresApproval() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCanApprove(t *testing.T) {
+	tests := []struct {
+		status db.RequestStatus
+		want   bool
+	}{
+		{db.StatusPending, true},
+		{db.StatusApproved, false},
+		{db.StatusExecuting, false},
+		{db.StatusExecuted, false},
+		{db.StatusRejected, false},
+	}
+
+	for _, tt := range tests {
+		if got := CanApprove(tt.status); got != tt.want {
+			t.Errorf("CanApprove(%q) = %v, want %v", tt.status, got, tt.want)
+		}
+	}
+}
+
+func TestCanExecute(t *testing.T) {
+	tests := []struct {
+		status db.RequestStatus
+		want   bool
+	}{
+		{db.StatusApproved, true},
+		{db.StatusPending, false},
+		{db.StatusExecuting, false},
+		{db.StatusExecuted, false},
+	}
+
+	for _, tt := range tests {
+		if got := CanExecute(tt.status); got != tt.want {
+			t.Errorf("CanExecute(%q) = %v, want %v", tt.status, got, tt.want)
+		}
+	}
+}
+
+func TestCanCancel(t *testing.T) {
+	tests := []struct {
+		status db.RequestStatus
+		want   bool
+	}{
+		{db.StatusPending, true},
+		{db.StatusApproved, true},
+		{db.StatusExecuting, false},
+		{db.StatusExecuted, false},
+		{db.StatusRejected, false},
+	}
+
+	for _, tt := range tests {
+		if got := CanCancel(tt.status); got != tt.want {
+			t.Errorf("CanCancel(%q) = %v, want %v", tt.status, got, tt.want)
+		}
+	}
+}
+
+func TestCheckExpiry(t *testing.T) {
+	now := time.Now().UTC()
+	past := now.Add(-1 * time.Hour)
+	future := now.Add(1 * time.Hour)
+
+	tests := []struct {
+		name       string
+		status     db.RequestStatus
+		expiresAt  *time.Time
+		wantStatus db.RequestStatus
+		wantExpiry bool
+	}{
+		{"not pending", db.StatusApproved, &past, "", false},
+		{"no expiry set", db.StatusPending, nil, "", false},
+		{"expired", db.StatusPending, &past, db.StatusTimeout, true},
+		{"not expired", db.StatusPending, &future, "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &db.Request{Status: tt.status, ExpiresAt: tt.expiresAt}
+			gotStatus, gotExpiry := CheckExpiry(req)
+			if gotStatus != tt.wantStatus || gotExpiry != tt.wantExpiry {
+				t.Errorf("CheckExpiry() = (%q, %v), want (%q, %v)", gotStatus, gotExpiry, tt.wantStatus, tt.wantExpiry)
+			}
+		})
+	}
+}
+
+func TestCheckApprovalExpiry(t *testing.T) {
+	now := time.Now().UTC()
+	past := now.Add(-1 * time.Hour)
+	future := now.Add(1 * time.Hour)
+
+	tests := []struct {
+		name              string
+		status            db.RequestStatus
+		approvalExpiresAt *time.Time
+		want              bool
+	}{
+		{"not approved", db.StatusPending, &past, false},
+		{"no approval expiry set", db.StatusApproved, nil, false},
+		{"approval expired", db.StatusApproved, &past, true},
+		{"approval not expired", db.StatusApproved, &future, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &db.Request{Status: tt.status, ApprovalExpiresAt: tt.approvalExpiresAt}
+			if got := CheckApprovalExpiry(req); got != tt.want {
+				t.Errorf("CheckApprovalExpiry() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestStateMachine(t *testing.T) {
+	t.Run("NewStateMachine", func(t *testing.T) {
+		sm := NewStateMachine()
+		if sm == nil {
+			t.Fatal("NewStateMachine() returned nil")
+		}
+	})
+
+	t.Run("Transition", func(t *testing.T) {
+		sm := NewStateMachine()
+		req := &db.Request{Status: db.StatusPending}
+		if err := sm.Transition(req, db.StatusApproved); err != nil {
+			t.Fatalf("Transition() error = %v", err)
+		}
+		if req.Status != db.StatusApproved {
+			t.Errorf("Status = %q, want %q", req.Status, db.StatusApproved)
+		}
+	})
+
+	t.Run("CanTransition", func(t *testing.T) {
+		sm := NewStateMachine()
+		if !sm.CanTransition(db.StatusPending, db.StatusApproved) {
+			t.Error("CanTransition(pending, approved) = false, want true")
+		}
+		if sm.CanTransition(db.StatusPending, db.StatusExecuted) {
+			t.Error("CanTransition(pending, executed) = true, want false")
+		}
+	})
+}
