@@ -4,47 +4,44 @@ package tui
 
 import (
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/Dicklesworthstone/slb/internal/tui/dashboard"
 )
 
 // Model represents the main TUI model.
 type Model struct {
-	ready  bool
-	width  int
-	height int
+	inner tea.Model
 }
 
 // New creates a new TUI model.
 func New() Model {
-	return Model{}
+	return Model{inner: dashboard.New("")}
 }
 
 // Init implements tea.Model.
 func (m Model) Init() tea.Cmd {
-	return nil
+	if m.inner == nil {
+		return nil
+	}
+	return m.inner.Init()
 }
 
 // Update implements tea.Model.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.WindowSizeMsg:
-		m.width = msg.Width
-		m.height = msg.Height
-		m.ready = true
-	case tea.KeyMsg:
-		switch msg.String() {
-		case "q", "ctrl+c":
-			return m, tea.Quit
-		}
+	if m.inner == nil {
+		return m, nil
 	}
-	return m, nil
+	next, cmd := m.inner.Update(msg)
+	m.inner = next
+	return m, cmd
 }
 
 // View implements tea.Model.
 func (m Model) View() string {
-	if !m.ready {
+	if m.inner == nil {
 		return "Loading..."
 	}
-	return "SLB TUI - Press q to quit"
+	return m.inner.View()
 }
 
 // Run starts the TUI.

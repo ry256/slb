@@ -1,3 +1,6 @@
+//go:build ignore
+// +build ignore
+
 // Package dashboard implements the main TUI dashboard view.
 package dashboard
 
@@ -6,12 +9,12 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/Dicklesworthstone/slb/internal/tui/components"
 	"github.com/Dicklesworthstone/slb/internal/tui/icons"
 	"github.com/Dicklesworthstone/slb/internal/tui/styles"
 	"github.com/Dicklesworthstone/slb/internal/tui/theme"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 // FocusPanel identifies which panel has focus.
@@ -40,21 +43,21 @@ type AgentData struct {
 
 // RequestData holds request display information.
 type RequestData struct {
-	ID           string
-	Command      string
-	Tier         string
-	Status       string
-	RequestorID  string
-	CreatedAt    time.Time
-	Selected     bool
+	ID          string
+	Command     string
+	Tier        string
+	Status      string
+	RequestorID string
+	CreatedAt   time.Time
+	Selected    bool
 }
 
 // ActivityItem represents a recent activity entry.
 type ActivityItem struct {
-	Action     string
-	Actor      string
-	RequestID  string
-	Timestamp  time.Time
+	Action    string
+	Actor     string
+	RequestID string
+	Timestamp time.Time
 }
 
 // Model is the main dashboard Bubble Tea model.
