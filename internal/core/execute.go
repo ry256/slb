@@ -14,13 +14,13 @@ import (
 
 // Execution errors.
 var (
-	ErrRequestNotApproved   = errors.New("request is not approved")
-	ErrApprovalExpired      = errors.New("approval has expired")
-	ErrCommandHashMismatch  = errors.New("command hash does not match")
-	ErrTierEscalated        = errors.New("current policy requires higher tier than approved")
-	ErrAlreadyExecuted      = errors.New("request has already been executed")
-	ErrAlreadyExecuting     = errors.New("request is already being executed")
-	ErrExecutionTimeout     = errors.New("command execution timed out")
+	ErrRequestNotApproved  = errors.New("request is not approved")
+	ErrApprovalExpired     = errors.New("approval has expired")
+	ErrCommandHashMismatch = errors.New("command hash does not match")
+	ErrTierEscalated       = errors.New("current policy requires higher tier than approved")
+	ErrAlreadyExecuted     = errors.New("request has already been executed")
+	ErrAlreadyExecuting    = errors.New("request is already being executed")
+	ErrExecutionTimeout    = errors.New("command execution timed out")
 )
 
 // DefaultExecutionTimeout is the default timeout for command execution.
