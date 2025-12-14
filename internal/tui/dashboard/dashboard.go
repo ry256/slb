@@ -68,6 +68,10 @@ type Model struct {
 
 	lastErr     error
 	lastRefresh time.Time
+
+	// Callbacks
+	OnPatterns func() // Navigate to pattern management view
+	OnHistory  func() // Navigate to history view
 }
 
 // New creates a dashboard model for a project.
@@ -118,7 +122,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "shift+tab":
 			m.focus = (m.focus + 2) % 3
 			return m, nil
-		case "left", "h":
+		case "left":
 			m.focus = (m.focus + 2) % 3
 			return m, nil
 		case "right", "l":
@@ -129,6 +133,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "down", "j":
 			m.moveSelection(1)
+			return m, nil
+		case "m":
+			if m.OnPatterns != nil {
+				m.OnPatterns()
+			}
+			return m, nil
+		case "h":
+			if m.OnHistory != nil {
+				m.OnHistory()
+			} else {
+				// Fallback to left focus if no handler
+				m.focus = (m.focus + 2) % 3
+			}
 			return m, nil
 		}
 	}
@@ -202,7 +219,7 @@ func (m Model) renderHeader() string {
 func (m Model) renderFooter() string {
 	th := theme.Current
 
-	hint := lipgloss.NewStyle().Foreground(th.Subtext).Render("[tab] focus  [↑/↓] navigate  [q] quit")
+	hint := lipgloss.NewStyle().Foreground(th.Subtext).Render("[tab] focus  [↑/↓] navigate  [m] patterns  [h] history  [q] quit")
 
 	right := ""
 	if !m.lastRefresh.IsZero() {
