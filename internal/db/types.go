@@ -249,6 +249,6 @@ func formatTimePtr(t *time.Time) *string {
 	if t == nil {
 		return nil
 	}
-	s := t.Format(time.RFC3339)
+	s := t.UTC().Format(time.RFC3339)
 	return &s
 }

@@ -307,6 +307,30 @@ func (db *DB) UpdateRequestExecution(id string, exec *Execution) error {
 	return nil
 }
 
+// UpdateRequestRollbackPath records the rollback capture directory path for a request.
+func (db *DB) UpdateRequestRollbackPath(id, rollbackPath string) error {
+	_, err := db.Exec(`
+		UPDATE requests SET rollback_path = ?
+		WHERE id = ?
+	`, nullString(rollbackPath), id)
+	if err != nil {
+		return fmt.Errorf("updating request rollback path: %w", err)
+	}
+	return nil
+}
+
+// UpdateRequestRolledBackAt records when a rollback was performed for a request.
+func (db *DB) UpdateRequestRolledBackAt(id string, rolledBackAt time.Time) error {
+	_, err := db.Exec(`
+		UPDATE requests SET rollback_rolled_back_at = ?
+		WHERE id = ?
+	`, rolledBackAt.UTC().Format(time.RFC3339), id)
+	if err != nil {
+		return fmt.Errorf("updating request rolled_back_at: %w", err)
+	}
+	return nil
+}
+
 // CountPendingBySession counts pending requests for a session (rate limiting).
 func (db *DB) CountPendingBySession(sessionID string) (int, error) {
 	var count int

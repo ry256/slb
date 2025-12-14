@@ -2,6 +2,7 @@
 package db
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -414,5 +415,220 @@ func TestIsRequestorSameAsReviewer(t *testing.T) {
 	}
 	if same {
 		t.Error("Expected different session to return false")
+	}
+}
+
+func TestIsRequestorSameAsReviewer_RequestNotFound(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	_, err := db.IsRequestorSameAsReviewer("nonexistent-request", "sess")
+	if err != ErrRequestNotFound {
+		t.Fatalf("expected ErrRequestNotFound, got %v", err)
+	}
+}
+
+func TestCreateReviewWithValidation_ApproveRejectAndValidationErrors(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	// Approve path (min approvals = 1).
+	_, req := createTestRequest(t, db)
+	reviewer := &Session{
+		AgentName:   "Reviewer1",
+		Program:     "codex-cli",
+		Model:       "gpt-5",
+		ProjectPath: "/test/project",
+	}
+	if err := db.CreateSession(reviewer); err != nil {
+		t.Fatalf("CreateSession reviewer failed: %v", err)
+	}
+	now := time.Now().UTC()
+	sig := ComputeReviewSignature(reviewer.SessionKey, req.ID, DecisionApprove, now)
+	review := &Review{
+		RequestID:          req.ID,
+		ReviewerSessionID:  reviewer.ID,
+		ReviewerAgent:      reviewer.AgentName,
+		ReviewerModel:      reviewer.Model,
+		Decision:           DecisionApprove,
+		Signature:          sig,
+		SignatureTimestamp: now,
+	}
+	if err := db.CreateReviewWithValidation(review, reviewer.SessionKey); err != nil {
+		t.Fatalf("CreateReviewWithValidation approve failed: %v", err)
+	}
+	updated, err := db.GetRequest(req.ID)
+	if err != nil {
+		t.Fatalf("GetRequest failed: %v", err)
+	}
+	if updated.Status != StatusApproved {
+		t.Fatalf("Status=%s want %s", updated.Status, StatusApproved)
+	}
+
+	// Reject path.
+	_, req2 := createTestRequest(t, db)
+	reviewer2 := &Session{AgentName: "Reviewer2", Program: "codex-cli", Model: "gpt-5", ProjectPath: "/test/project"}
+	if err := db.CreateSession(reviewer2); err != nil {
+		t.Fatalf("CreateSession reviewer2 failed: %v", err)
+	}
+	now2 := time.Now().UTC()
+	sig2 := ComputeReviewSignature(reviewer2.SessionKey, req2.ID, DecisionReject, now2)
+	review2 := &Review{
+		RequestID:          req2.ID,
+		ReviewerSessionID:  reviewer2.ID,
+		ReviewerAgent:      reviewer2.AgentName,
+		ReviewerModel:      reviewer2.Model,
+		Decision:           DecisionReject,
+		Signature:          sig2,
+		SignatureTimestamp: now2,
+	}
+	if err := db.CreateReviewWithValidation(review2, reviewer2.SessionKey); err != nil {
+		t.Fatalf("CreateReviewWithValidation reject failed: %v", err)
+	}
+	updated2, err := db.GetRequest(req2.ID)
+	if err != nil {
+		t.Fatalf("GetRequest failed: %v", err)
+	}
+	if updated2.Status != StatusRejected {
+		t.Fatalf("Status=%s want %s", updated2.Status, StatusRejected)
+	}
+
+	// Self-review is blocked.
+	requestor, req3 := createTestRequest(t, db)
+	selfReview := &Review{
+		RequestID:          req3.ID,
+		ReviewerSessionID:  requestor.ID,
+		ReviewerAgent:      requestor.AgentName,
+		ReviewerModel:      requestor.Model,
+		Decision:           DecisionApprove,
+		Signature:          "ignored",
+		SignatureTimestamp: time.Now().UTC(),
+	}
+	if err := db.CreateReviewWithValidation(selfReview, requestor.SessionKey); err != ErrSelfReview {
+		t.Fatalf("expected ErrSelfReview, got %v", err)
+	}
+
+	// Invalid signature is rejected.
+	_, req4 := createTestRequest(t, db)
+	reviewer4 := &Session{AgentName: "Reviewer4", Program: "codex-cli", Model: "gpt-5", ProjectPath: "/test/project"}
+	if err := db.CreateSession(reviewer4); err != nil {
+		t.Fatalf("CreateSession reviewer4 failed: %v", err)
+	}
+	invalid := &Review{
+		RequestID:          req4.ID,
+		ReviewerSessionID:  reviewer4.ID,
+		ReviewerAgent:      reviewer4.AgentName,
+		ReviewerModel:      reviewer4.Model,
+		Decision:           DecisionApprove,
+		Signature:          "bad",
+		SignatureTimestamp: time.Now().UTC(),
+	}
+	if err := db.CreateReviewWithValidation(invalid, reviewer4.SessionKey); err != ErrInvalidSignature {
+		t.Fatalf("expected ErrInvalidSignature, got %v", err)
+	}
+
+	// Request must be pending.
+	_, req5 := createTestRequest(t, db)
+	if err := db.UpdateRequestStatus(req5.ID, StatusApproved); err != nil {
+		t.Fatalf("UpdateRequestStatus failed: %v", err)
+	}
+	reviewer5 := &Session{AgentName: "Reviewer5", Program: "codex-cli", Model: "gpt-5", ProjectPath: "/test/project"}
+	if err := db.CreateSession(reviewer5); err != nil {
+		t.Fatalf("CreateSession reviewer5 failed: %v", err)
+	}
+	now5 := time.Now().UTC()
+	sig5 := ComputeReviewSignature(reviewer5.SessionKey, req5.ID, DecisionApprove, now5)
+	notPending := &Review{
+		RequestID:          req5.ID,
+		ReviewerSessionID:  reviewer5.ID,
+		ReviewerAgent:      reviewer5.AgentName,
+		ReviewerModel:      reviewer5.Model,
+		Decision:           DecisionApprove,
+		Signature:          sig5,
+		SignatureTimestamp: now5,
+	}
+	if err := db.CreateReviewWithValidation(notPending, reviewer5.SessionKey); err == nil || !strings.Contains(err.Error(), "request is not pending") {
+		t.Fatalf("expected not-pending error, got %v", err)
+	}
+}
+
+func TestCreateReviewWithValidation_RequireDifferentModel(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	project := "/test/project"
+
+	requestor := &Session{AgentName: "Req", Program: "codex-cli", Model: "opus-4.5", ProjectPath: project}
+	if err := db.CreateSession(requestor); err != nil {
+		t.Fatalf("CreateSession requestor failed: %v", err)
+	}
+
+	req := &Request{
+		ProjectPath:           project,
+		RequestorSessionID:    requestor.ID,
+		RequestorAgent:        requestor.AgentName,
+		RequestorModel:        requestor.Model,
+		RiskTier:              RiskTierDangerous,
+		MinApprovals:          1,
+		RequireDifferentModel: true,
+		Command:               CommandSpec{Raw: "rm -rf ./build", Cwd: project},
+		Justification:         Justification{Reason: "test"},
+	}
+	if err := db.CreateRequest(req); err != nil {
+		t.Fatalf("CreateRequest failed: %v", err)
+	}
+
+	sameModel := &Session{AgentName: "Same", Program: "codex-cli", Model: "opus-4.5", ProjectPath: project}
+	if err := db.CreateSession(sameModel); err != nil {
+		t.Fatalf("CreateSession sameModel failed: %v", err)
+	}
+
+	ts1 := time.Now().UTC()
+	sig1 := ComputeReviewSignature(sameModel.SessionKey, req.ID, DecisionApprove, ts1)
+	r1 := &Review{
+		RequestID:          req.ID,
+		ReviewerSessionID:  sameModel.ID,
+		ReviewerAgent:      sameModel.AgentName,
+		ReviewerModel:      sameModel.Model,
+		Decision:           DecisionApprove,
+		Signature:          sig1,
+		SignatureTimestamp: ts1,
+	}
+	if err := db.CreateReviewWithValidation(r1, sameModel.SessionKey); err != nil {
+		t.Fatalf("CreateReviewWithValidation (same model) failed: %v", err)
+	}
+	stillPending, err := db.GetRequest(req.ID)
+	if err != nil {
+		t.Fatalf("GetRequest failed: %v", err)
+	}
+	if stillPending.Status != StatusPending {
+		t.Fatalf("Status=%s want %s", stillPending.Status, StatusPending)
+	}
+
+	diffModel := &Session{AgentName: "Diff", Program: "codex-cli", Model: "gpt-5", ProjectPath: project}
+	if err := db.CreateSession(diffModel); err != nil {
+		t.Fatalf("CreateSession diffModel failed: %v", err)
+	}
+
+	ts2 := time.Now().UTC()
+	sig2 := ComputeReviewSignature(diffModel.SessionKey, req.ID, DecisionApprove, ts2)
+	r2 := &Review{
+		RequestID:          req.ID,
+		ReviewerSessionID:  diffModel.ID,
+		ReviewerAgent:      diffModel.AgentName,
+		ReviewerModel:      diffModel.Model,
+		Decision:           DecisionApprove,
+		Signature:          sig2,
+		SignatureTimestamp: ts2,
+	}
+	if err := db.CreateReviewWithValidation(r2, diffModel.SessionKey); err != nil {
+		t.Fatalf("CreateReviewWithValidation (different model) failed: %v", err)
+	}
+	approved, err := db.GetRequest(req.ID)
+	if err != nil {
+		t.Fatalf("GetRequest failed: %v", err)
+	}
+	if approved.Status != StatusApproved {
+		t.Fatalf("Status=%s want %s", approved.Status, StatusApproved)
 	}
 }

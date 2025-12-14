@@ -2,6 +2,8 @@
 package db
 
 import (
+	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 )
@@ -402,6 +404,414 @@ func TestListPendingRequestsAllProjects(t *testing.T) {
 
 	if len(all) != 2 {
 		t.Errorf("Expected 2 pending across all projects, got %d", len(all))
+	}
+}
+
+func TestListPendingRequestsByProjects(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	// Empty input should return empty slice (not nil).
+	results, err := db.ListPendingRequestsByProjects(nil)
+	if err != nil {
+		t.Fatalf("ListPendingRequestsByProjects(nil) failed: %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("expected 0 results, got %d", len(results))
+	}
+
+	// Create requests in multiple projects.
+	sess1 := &Session{AgentName: "Agent1", Program: "codex-cli", Model: "gpt-5", ProjectPath: "/test/project1"}
+	sess2 := &Session{AgentName: "Agent2", Program: "codex-cli", Model: "gpt-5", ProjectPath: "/test/project2"}
+	if err := db.CreateSession(sess1); err != nil {
+		t.Fatalf("CreateSession sess1 failed: %v", err)
+	}
+	if err := db.CreateSession(sess2); err != nil {
+		t.Fatalf("CreateSession sess2 failed: %v", err)
+	}
+
+	r1 := &Request{
+		ProjectPath:        sess1.ProjectPath,
+		RequestorSessionID: sess1.ID,
+		RequestorAgent:     sess1.AgentName,
+		RequestorModel:     sess1.Model,
+		RiskTier:           RiskTierDangerous,
+		MinApprovals:       1,
+		Command:            CommandSpec{Raw: "rm -rf /tmp/test1", Cwd: "/tmp"},
+		Justification:      Justification{Reason: "Test 1"},
+	}
+	r2 := &Request{
+		ProjectPath:        sess2.ProjectPath,
+		RequestorSessionID: sess2.ID,
+		RequestorAgent:     sess2.AgentName,
+		RequestorModel:     sess2.Model,
+		RiskTier:           RiskTierDangerous,
+		MinApprovals:       1,
+		Command:            CommandSpec{Raw: "rm -rf /tmp/test2", Cwd: "/tmp"},
+		Justification:      Justification{Reason: "Test 2"},
+	}
+	if err := db.CreateRequest(r1); err != nil {
+		t.Fatalf("CreateRequest r1 failed: %v", err)
+	}
+	if err := db.CreateRequest(r2); err != nil {
+		t.Fatalf("CreateRequest r2 failed: %v", err)
+	}
+
+	results, err = db.ListPendingRequestsByProjects([]string{sess1.ProjectPath})
+	if err != nil {
+		t.Fatalf("ListPendingRequestsByProjects failed: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].ID != r1.ID {
+		t.Fatalf("expected %s, got %s", r1.ID, results[0].ID)
+	}
+
+	results, err = db.ListPendingRequestsByProjects([]string{sess1.ProjectPath, sess2.ProjectPath})
+	if err != nil {
+		t.Fatalf("ListPendingRequestsByProjects failed: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+}
+
+func TestUpdateRequestExecutionAndRollback(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	_, r := createTestRequest(t, db)
+
+	execAt := time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC)
+	exitCode := 7
+	durationMs := int64(1234)
+	exec := &Execution{
+		ExecutedAt:          &execAt,
+		ExecutedBySessionID: "sess-exec",
+		ExecutedByAgent:     "ExecAgent",
+		ExecutedByModel:     "gpt-5",
+		LogPath:             "/tmp/slb.log",
+		ExitCode:            &exitCode,
+		DurationMs:          &durationMs,
+	}
+	if err := db.UpdateRequestExecution(r.ID, exec); err != nil {
+		t.Fatalf("UpdateRequestExecution failed: %v", err)
+	}
+
+	if err := db.UpdateRequestRollbackPath(r.ID, "/tmp/rollback"); err != nil {
+		t.Fatalf("UpdateRequestRollbackPath failed: %v", err)
+	}
+	rolledAt := time.Date(2024, 1, 2, 4, 5, 6, 0, time.UTC)
+	if err := db.UpdateRequestRolledBackAt(r.ID, rolledAt); err != nil {
+		t.Fatalf("UpdateRequestRolledBackAt failed: %v", err)
+	}
+
+	retrieved, err := db.GetRequest(r.ID)
+	if err != nil {
+		t.Fatalf("GetRequest failed: %v", err)
+	}
+	if retrieved.Execution == nil {
+		t.Fatalf("expected execution info to be present")
+	}
+	if retrieved.Execution.LogPath != "/tmp/slb.log" {
+		t.Fatalf("LogPath=%q want %q", retrieved.Execution.LogPath, "/tmp/slb.log")
+	}
+	if retrieved.Execution.ExitCode == nil || *retrieved.Execution.ExitCode != 7 {
+		t.Fatalf("ExitCode=%v want 7", retrieved.Execution.ExitCode)
+	}
+	if retrieved.Execution.DurationMs == nil || *retrieved.Execution.DurationMs != 1234 {
+		t.Fatalf("DurationMs=%v want 1234", retrieved.Execution.DurationMs)
+	}
+	if retrieved.Execution.ExecutedAt == nil || !retrieved.Execution.ExecutedAt.Equal(execAt) {
+		t.Fatalf("ExecutedAt=%v want %v", retrieved.Execution.ExecutedAt, execAt)
+	}
+	if retrieved.Execution.ExecutedBySessionID != "sess-exec" {
+		t.Fatalf("ExecutedBySessionID=%q want %q", retrieved.Execution.ExecutedBySessionID, "sess-exec")
+	}
+	if retrieved.Execution.ExecutedByAgent != "ExecAgent" {
+		t.Fatalf("ExecutedByAgent=%q want %q", retrieved.Execution.ExecutedByAgent, "ExecAgent")
+	}
+	if retrieved.Execution.ExecutedByModel != "gpt-5" {
+		t.Fatalf("ExecutedByModel=%q want %q", retrieved.Execution.ExecutedByModel, "gpt-5")
+	}
+
+	if retrieved.Rollback == nil {
+		t.Fatalf("expected rollback info to be present")
+	}
+	if retrieved.Rollback.Path != "/tmp/rollback" {
+		t.Fatalf("Rollback.Path=%q want %q", retrieved.Rollback.Path, "/tmp/rollback")
+	}
+	if retrieved.Rollback.RolledBackAt == nil || !retrieved.Rollback.RolledBackAt.Equal(rolledAt) {
+		t.Fatalf("Rollback.RolledBackAt=%v want %v", retrieved.Rollback.RolledBackAt, rolledAt)
+	}
+}
+
+func TestSessionRateLimitTimeWindowQueries(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	sess := &Session{AgentName: "RateAgent", Program: "codex-cli", Model: "gpt-5", ProjectPath: "/test/project"}
+	if err := db.CreateSession(sess); err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+
+	makeRequest := func() *Request {
+		r := &Request{
+			ProjectPath:        sess.ProjectPath,
+			RequestorSessionID: sess.ID,
+			RequestorAgent:     sess.AgentName,
+			RequestorModel:     sess.Model,
+			RiskTier:           RiskTierDangerous,
+			MinApprovals:       1,
+			Command:            CommandSpec{Raw: "rm -rf ./build", Cwd: sess.ProjectPath},
+			Justification:      Justification{Reason: "rate test"},
+		}
+		if err := db.CreateRequest(r); err != nil {
+			t.Fatalf("CreateRequest failed: %v", err)
+		}
+		return r
+	}
+
+	r1 := makeRequest()
+	r2 := makeRequest()
+	r3 := makeRequest()
+
+	now := time.Now().UTC().Truncate(time.Second)
+	t1 := now.Add(-10 * time.Minute)
+	t2 := now.Add(-5 * time.Minute)
+	t3 := now.Add(-1 * time.Minute)
+
+	for id, ts := range map[string]time.Time{r1.ID: t1, r2.ID: t2, r3.ID: t3} {
+		if _, err := db.Exec(`UPDATE requests SET created_at = ? WHERE id = ?`, ts.Format(time.RFC3339), id); err != nil {
+			t.Fatalf("update created_at failed: %v", err)
+		}
+	}
+
+	count, err := db.CountRequestsSince(sess.ID, t2)
+	if err != nil {
+		t.Fatalf("CountRequestsSince failed: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("CountRequestsSince=%d want 2", count)
+	}
+
+	oldest, err := db.OldestRequestCreatedAtSince(sess.ID, t2)
+	if err != nil {
+		t.Fatalf("OldestRequestCreatedAtSince failed: %v", err)
+	}
+	if oldest == nil || !oldest.Equal(t2) {
+		t.Fatalf("oldest=%v want %v", oldest, t2)
+	}
+
+	oldest, err = db.OldestRequestCreatedAtSince(sess.ID, now.Add(24*time.Hour))
+	if err != nil {
+		t.Fatalf("OldestRequestCreatedAtSince failed: %v", err)
+	}
+	if oldest != nil {
+		t.Fatalf("expected nil oldest for empty window, got %v", oldest)
+	}
+
+	recent, err := db.CountRecentRequestsBySession(sess.ID, 60*60) // last hour
+	if err != nil {
+		t.Fatalf("CountRecentRequestsBySession failed: %v", err)
+	}
+	if recent != 3 {
+		t.Fatalf("CountRecentRequestsBySession=%d want 3", recent)
+	}
+}
+
+func TestRequestHelpersAndEnums(t *testing.T) {
+	if !RiskTierCritical.Valid() || RiskTier("nope").Valid() {
+		t.Fatalf("RiskTier.Valid unexpected results")
+	}
+	if RiskTierCritical.MinApprovals() != 2 || RiskTierDangerous.MinApprovals() != 1 || RiskTierCaution.MinApprovals() != 0 {
+		t.Fatalf("RiskTier.MinApprovals unexpected results")
+	}
+	if RiskTier("unknown").MinApprovals() != 2 {
+		t.Fatalf("RiskTier.MinApprovals default should be 2")
+	}
+
+	if !StatusPending.Valid() || RequestStatus("nope").Valid() {
+		t.Fatalf("RequestStatus.Valid unexpected results")
+	}
+	if !StatusExecuted.IsTerminal() || StatusPending.IsTerminal() {
+		t.Fatalf("RequestStatus.IsTerminal unexpected results")
+	}
+	if !StatusPending.IsPending() || !StatusApproved.IsPending() || StatusExecuting.IsPending() {
+		t.Fatalf("RequestStatus.IsPending unexpected results")
+	}
+
+	if !DecisionApprove.Valid() || Decision("nope").Valid() {
+		t.Fatalf("Decision.Valid unexpected results")
+	}
+
+	req := &Request{ID: "req-1"}
+	if req.IsExpired() {
+		t.Fatalf("expected IsExpired=false when ExpiresAt is nil")
+	}
+	past := time.Now().UTC().Add(-1 * time.Minute)
+	req.ExpiresAt = &past
+	if !req.IsExpired() {
+		t.Fatalf("expected IsExpired=true for past expiry")
+	}
+	future := time.Now().UTC().Add(1 * time.Minute)
+	req.ExpiresAt = &future
+	if req.IsExpired() {
+		t.Fatalf("expected IsExpired=false for future expiry")
+	}
+
+	reviews := []Review{
+		{RequestID: "req-1", Decision: DecisionApprove},
+		{RequestID: "req-1", Decision: DecisionReject},
+		{RequestID: "req-1", Decision: DecisionApprove},
+		{RequestID: "req-2", Decision: DecisionApprove},
+	}
+	if got := req.ApprovalCount(reviews); got != 2 {
+		t.Fatalf("ApprovalCount=%d want 2", got)
+	}
+
+	createdAt := time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC)
+	resolvedAt := createdAt.Add(1 * time.Minute)
+	expiresAt := createdAt.Add(2 * time.Minute)
+	approvalExpiresAt := createdAt.Add(3 * time.Minute)
+	req.CreatedAt = createdAt
+	req.ResolvedAt = &resolvedAt
+	req.ExpiresAt = &expiresAt
+	req.ApprovalExpiresAt = &approvalExpiresAt
+
+	b, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("MarshalJSON failed: %v", err)
+	}
+
+	var out map[string]any
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	if out["created_at"] != createdAt.Format(time.RFC3339) {
+		t.Fatalf("created_at=%v want %v", out["created_at"], createdAt.Format(time.RFC3339))
+	}
+	if out["resolved_at"] != resolvedAt.Format(time.RFC3339) {
+		t.Fatalf("resolved_at=%v want %v", out["resolved_at"], resolvedAt.Format(time.RFC3339))
+	}
+	if out["expires_at"] != expiresAt.Format(time.RFC3339) {
+		t.Fatalf("expires_at=%v want %v", out["expires_at"], expiresAt.Format(time.RFC3339))
+	}
+	if out["approval_expires_at"] != approvalExpiresAt.Format(time.RFC3339) {
+		t.Fatalf("approval_expires_at=%v want %v", out["approval_expires_at"], approvalExpiresAt.Format(time.RFC3339))
+	}
+}
+
+func TestListRequestsByStatus_ParsesOptionalFields(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	sess := &Session{AgentName: "OptAgent", Program: "codex-cli", Model: "gpt-5", ProjectPath: "/test/project"}
+	if err := db.CreateSession(sess); err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+
+	approvalExpiresAt := time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC)
+	req := &Request{
+		ProjectPath:        sess.ProjectPath,
+		RequestorSessionID: sess.ID,
+		RequestorAgent:     sess.AgentName,
+		RequestorModel:     sess.Model,
+		RiskTier:           RiskTierDangerous,
+		MinApprovals:       1,
+		Command: CommandSpec{
+			Raw:              "echo secret",
+			Argv:             []string{"echo", "secret"},
+			Cwd:              sess.ProjectPath,
+			Shell:            true,
+			DisplayRedacted:  "echo [REDACTED]",
+			ContainsSensitive: true,
+		},
+		Justification: Justification{
+			Reason:         "Need to test parsing",
+			ExpectedEffect: "Optional fields are persisted",
+			Goal:           "Coverage",
+			SafetyArgument: "Test-only",
+		},
+		DryRun: &DryRunResult{Command: "echo dry", Output: "ok"},
+		Attachments: []Attachment{
+			{Type: AttachmentTypeFile, Content: "README.md", Metadata: map[string]any{"path": "README.md"}},
+		},
+		ApprovalExpiresAt: &approvalExpiresAt,
+	}
+	if err := db.CreateRequest(req); err != nil {
+		t.Fatalf("CreateRequest failed: %v", err)
+	}
+
+	list, err := db.ListRequestsByStatus(StatusPending, sess.ProjectPath)
+	if err != nil {
+		t.Fatalf("ListRequestsByStatus failed: %v", err)
+	}
+
+	var got *Request
+	for _, r := range list {
+		if r.ID == req.ID {
+			got = r
+			break
+		}
+	}
+	if got == nil {
+		t.Fatalf("expected request %s to be present", req.ID)
+	}
+
+	if got.Command.Shell != true {
+		t.Fatalf("Shell=%v want true", got.Command.Shell)
+	}
+	if got.Command.DisplayRedacted != "echo [REDACTED]" {
+		t.Fatalf("DisplayRedacted=%q want %q", got.Command.DisplayRedacted, "echo [REDACTED]")
+	}
+	if got.Command.ContainsSensitive != true {
+		t.Fatalf("ContainsSensitive=%v want true", got.Command.ContainsSensitive)
+	}
+	if got.Justification.ExpectedEffect != "Optional fields are persisted" {
+		t.Fatalf("ExpectedEffect=%q", got.Justification.ExpectedEffect)
+	}
+	if got.Justification.Goal != "Coverage" {
+		t.Fatalf("Goal=%q", got.Justification.Goal)
+	}
+	if got.Justification.SafetyArgument != "Test-only" {
+		t.Fatalf("SafetyArgument=%q", got.Justification.SafetyArgument)
+	}
+	if got.DryRun == nil || got.DryRun.Command != "echo dry" || got.DryRun.Output != "ok" {
+		t.Fatalf("DryRun=%#v", got.DryRun)
+	}
+	if got.Attachments == nil || len(got.Attachments) != 1 {
+		t.Fatalf("Attachments=%#v", got.Attachments)
+	}
+	if got.ApprovalExpiresAt == nil || !got.ApprovalExpiresAt.Equal(approvalExpiresAt) {
+		t.Fatalf("ApprovalExpiresAt=%v want %v", got.ApprovalExpiresAt, approvalExpiresAt)
+	}
+}
+
+func TestUpdateRequestStatus_TimeoutEscalatedAndTerminalNoTransition(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	_, r := createTestRequest(t, db)
+	if err := db.UpdateRequestStatus(r.ID, StatusTimeout); err != nil {
+		t.Fatalf("UpdateRequestStatus(timeout) failed: %v", err)
+	}
+	if err := db.UpdateRequestStatus(r.ID, StatusEscalated); err != nil {
+		t.Fatalf("UpdateRequestStatus(escalated) failed: %v", err)
+	}
+
+	_, r2 := createTestRequest(t, db)
+	if err := db.UpdateRequestStatus(r2.ID, StatusCancelled); err != nil {
+		t.Fatalf("UpdateRequestStatus(cancelled) failed: %v", err)
+	}
+
+	err := db.UpdateRequestStatus(r2.ID, StatusApproved)
+	if err == nil {
+		t.Fatalf("expected invalid transition from terminal state")
+	}
+	if !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("expected ErrInvalidTransition, got %v", err)
 	}
 }
 

@@ -2,7 +2,6 @@
 package db
 
 import (
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -201,6 +200,59 @@ func TestListActiveSessions(t *testing.T) {
 	}
 }
 
+func TestListAllActiveSessions(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	s1 := &Session{
+		AgentName:   "Agent1",
+		Program:     "claude-code",
+		Model:       "opus-4.5",
+		ProjectPath: "/test/project1",
+	}
+	if err := db.CreateSession(s1); err != nil {
+		t.Fatalf("CreateSession s1 failed: %v", err)
+	}
+
+	s2 := &Session{
+		AgentName:   "Agent2",
+		Program:     "codex-cli",
+		Model:       "gpt-5",
+		ProjectPath: "/test/project2",
+	}
+	if err := db.CreateSession(s2); err != nil {
+		t.Fatalf("CreateSession s2 failed: %v", err)
+	}
+
+	s3 := &Session{
+		AgentName:   "Agent3",
+		Program:     "codex-cli",
+		Model:       "gpt-5",
+		ProjectPath: "/test/project1",
+	}
+	if err := db.CreateSession(s3); err != nil {
+		t.Fatalf("CreateSession s3 failed: %v", err)
+	}
+
+	if err := db.EndSession(s2.ID); err != nil {
+		t.Fatalf("EndSession failed: %v", err)
+	}
+
+	sessions, err := db.ListAllActiveSessions()
+	if err != nil {
+		t.Fatalf("ListAllActiveSessions failed: %v", err)
+	}
+
+	if len(sessions) != 2 {
+		t.Fatalf("Expected 2 active sessions, got %d", len(sessions))
+	}
+	for _, s := range sessions {
+		if s.ID == s2.ID {
+			t.Fatalf("Expected ended session to be excluded")
+		}
+	}
+}
+
 func TestUpdateSessionHeartbeat(t *testing.T) {
 	db := setupTestDB(t)
 	defer db.Close()
@@ -286,6 +338,15 @@ func TestEndSession(t *testing.T) {
 	}
 }
 
+func TestEndSessionNotFound(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	if err := db.EndSession("nonexistent-id"); err != ErrSessionNotFound {
+		t.Fatalf("expected ErrSessionNotFound, got %v", err)
+	}
+}
+
 func TestFindStaleSessions(t *testing.T) {
 	db := setupTestDB(t)
 	defer db.Close()
@@ -361,16 +422,146 @@ func TestCreateSessionAllowsAfterEnd(t *testing.T) {
 	}
 }
 
+func TestSessionRateLimitResetAt(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	s := &Session{
+		AgentName:   "RateLimitAgent",
+		Program:     "codex-cli",
+		Model:       "gpt-5",
+		ProjectPath: "/test/project",
+	}
+	if err := db.CreateSession(s); err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+
+	got, err := db.GetSessionRateLimitResetAt(s.ID)
+	if err != nil {
+		t.Fatalf("GetSessionRateLimitResetAt failed: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("expected nil resetAt, got %v", got)
+	}
+
+	resetAt := time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC)
+	recorded, err := db.ResetSessionRateLimits(s.ID, resetAt)
+	if err != nil {
+		t.Fatalf("ResetSessionRateLimits failed: %v", err)
+	}
+	if !recorded.Equal(resetAt) {
+		t.Fatalf("recorded=%v want %v", recorded, resetAt)
+	}
+
+	got, err = db.GetSessionRateLimitResetAt(s.ID)
+	if err != nil {
+		t.Fatalf("GetSessionRateLimitResetAt failed: %v", err)
+	}
+	if got == nil || !got.Equal(resetAt) {
+		t.Fatalf("resetAt=%v want %v", got, resetAt)
+	}
+
+	if _, err := db.Exec(`UPDATE sessions SET rate_limit_reset_at = ? WHERE id = ?`, "not-a-time", s.ID); err != nil {
+		t.Fatalf("set invalid rate_limit_reset_at failed: %v", err)
+	}
+	if _, err := db.GetSessionRateLimitResetAt(s.ID); err == nil {
+		t.Fatalf("expected parse error")
+	}
+
+	if err := db.EndSession(s.ID); err != nil {
+		t.Fatalf("EndSession failed: %v", err)
+	}
+	if _, err := db.ResetSessionRateLimits(s.ID, time.Now()); err != ErrSessionNotFound {
+		t.Fatalf("expected ErrSessionNotFound after ending session, got %v", err)
+	}
+	if _, err := db.GetSessionRateLimitResetAt(s.ID); err != ErrSessionNotFound {
+		t.Fatalf("expected ErrSessionNotFound after ending session, got %v", err)
+	}
+}
+
+func TestDifferentModelSessionQueries(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	projectPath := "/test/project"
+
+	same1 := &Session{AgentName: "Same1", Program: "codex-cli", Model: "opus-4.5", ProjectPath: projectPath}
+	same2 := &Session{AgentName: "Same2", Program: "codex-cli", Model: "opus-4.5", ProjectPath: projectPath}
+	diff := &Session{AgentName: "Diff", Program: "codex-cli", Model: "gpt-5", ProjectPath: projectPath}
+
+	for _, s := range []*Session{same1, same2, diff} {
+		if err := db.CreateSession(s); err != nil {
+			t.Fatalf("CreateSession failed: %v", err)
+		}
+	}
+
+	list, err := db.ListActiveSessionsWithDifferentModel(projectPath, "opus-4.5")
+	if err != nil {
+		t.Fatalf("ListActiveSessionsWithDifferentModel failed: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("expected 1 different-model session, got %d", len(list))
+	}
+	if list[0].ID != diff.ID {
+		t.Fatalf("expected different-model session %s, got %s", diff.ID, list[0].ID)
+	}
+
+	has, err := db.HasActiveSessionWithDifferentModel(projectPath, "opus-4.5")
+	if err != nil {
+		t.Fatalf("HasActiveSessionWithDifferentModel failed: %v", err)
+	}
+	if !has {
+		t.Fatalf("expected HasDifferentModel=true")
+	}
+
+	status, err := db.GetDifferentModelStatus(projectPath, "opus-4.5")
+	if err != nil {
+		t.Fatalf("GetDifferentModelStatus failed: %v", err)
+	}
+	if !status.HasDifferentModel {
+		t.Fatalf("expected HasDifferentModel=true")
+	}
+	if len(status.AvailableModels) != 2 {
+		t.Fatalf("expected 2 available models, got %d", len(status.AvailableModels))
+	}
+	if len(status.SameModelSessions) != 2 {
+		t.Fatalf("expected 2 same-model sessions, got %d", len(status.SameModelSessions))
+	}
+	if len(status.DifferentModelSessions) != 1 {
+		t.Fatalf("expected 1 different-model session, got %d", len(status.DifferentModelSessions))
+	}
+
+	if err := db.EndSession(diff.ID); err != nil {
+		t.Fatalf("EndSession failed: %v", err)
+	}
+
+	has, err = db.HasActiveSessionWithDifferentModel(projectPath, "opus-4.5")
+	if err != nil {
+		t.Fatalf("HasActiveSessionWithDifferentModel failed: %v", err)
+	}
+	if has {
+		t.Fatalf("expected HasDifferentModel=false after ending different-model session")
+	}
+	list, err = db.ListActiveSessionsWithDifferentModel(projectPath, "opus-4.5")
+	if err != nil {
+		t.Fatalf("ListActiveSessionsWithDifferentModel failed: %v", err)
+	}
+	if len(list) != 0 {
+		t.Fatalf("expected 0 different-model sessions, got %d", len(list))
+	}
+}
+
+func TestIsUniqueConstraintError_Nil(t *testing.T) {
+	if isUniqueConstraintError(nil) {
+		t.Fatalf("expected nil error to be non-unique")
+	}
+}
+
 // setupTestDB creates a temporary database for testing.
 func setupTestDB(t *testing.T) *DB {
 	t.Helper()
 
-	tmpDir, err := os.MkdirTemp("", "slb-test-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	t.Cleanup(func() { os.RemoveAll(tmpDir) })
-
+	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test.db")
 	db, err := Open(dbPath)
 	if err != nil {
