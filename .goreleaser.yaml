@@ -1,0 +1,124 @@
+# GoReleaser configuration for SLB
+# https://goreleaser.com
+
+version: 2
+
+project_name: slb
+
+before:
+  hooks:
+    - go mod tidy
+    - go generate ./...
+
+builds:
+  - id: slb
+    main: ./cmd/slb
+    binary: slb
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w
+      - -X github.com/Dicklesworthstone/slb/internal/cli.version={{.Version}}
+      - -X github.com/Dicklesworthstone/slb/internal/cli.commit={{.Commit}}
+      - -X github.com/Dicklesworthstone/slb/internal/cli.date={{.Date}}
+
+archives:
+  - id: default
+    format: tar.gz
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- .Os }}_
+      {{- .Arch }}
+    format_overrides:
+      - goos: windows
+        format: zip
+    files:
+      - README*
+      - PLAN_TO_MAKE_SLB.md
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+sboms:
+  - artifacts: archive
+    cmd: syft
+    args: ["$artifact", "--output", "spdx-json=$document"]
+
+signs:
+  - cmd: cosign
+    env:
+      - COSIGN_EXPERIMENTAL=1
+    certificate: "${artifact}.pem"
+    args:
+      - sign-blob
+      - "--output-certificate=${certificate}"
+      - "--output-signature=${signature}"
+      - "${artifact}"
+      - "--yes"
+    artifacts: checksum
+    output: true
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+      - "^chore:"
+      - Merge pull request
+      - Merge branch
+
+release:
+  github:
+    owner: Dicklesworthstone
+    name: slb
+  draft: false
+  prerelease: auto
+  name_template: "v{{.Version}}"
+
+brews:
+  - repository:
+      owner: Dicklesworthstone
+      name: homebrew-tap
+    folder: Formula
+    homepage: https://github.com/Dicklesworthstone/slb
+    description: "Simultaneous Launch Button - Two-person rule for dangerous commands"
+    license: MIT
+    install: |
+      bin.install "slb"
+    test: |
+      system "#{bin}/slb", "version"
+
+nfpms:
+  - id: default
+    package_name: slb
+    file_name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    vendor: Dicklesworthstone
+    homepage: https://github.com/Dicklesworthstone/slb
+    maintainer: Dicklesworthstone
+    description: "Simultaneous Launch Button - Two-person rule for dangerous commands"
+    license: MIT
+    formats:
+      - deb
+      - rpm
+      - apk
+    bindir: /usr/bin
+
+announce:
+  skip: true

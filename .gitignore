@@ -1,6 +1,7 @@
 # Binaries
 *.exe
 dist/
+build/
 
 # Test coverage
 coverage.out
@@ -27,3 +28,4 @@ vendor/
 *.test
 coverage.out
 dashboard_debug.txt
+build/slb
