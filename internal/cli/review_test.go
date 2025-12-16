@@ -1,0 +1,313 @@
+package cli
+
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+
+	"github.com/Dicklesworthstone/slb/internal/db"
+	"github.com/Dicklesworthstone/slb/internal/testutil"
+	"github.com/spf13/cobra"
+)
+
+// newTestReviewCmd creates a fresh review command tree for testing.
+func newTestReviewCmd(dbPath string) *cobra.Command {
+	root := &cobra.Command{
+		Use:           "slb",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+	}
+
+	root.PersistentFlags().StringVar(&flagDB, "db", dbPath, "database path")
+	root.PersistentFlags().StringVarP(&flagOutput, "output", "o", "text", "output format")
+	root.PersistentFlags().BoolVarP(&flagJSON, "json", "j", false, "json output")
+	root.PersistentFlags().StringVarP(&flagProject, "project", "C", "", "project directory")
+	root.PersistentFlags().StringVarP(&flagConfig, "config", "c", "", "config file")
+
+	// Create fresh review commands
+	revCmd := &cobra.Command{
+		Use:   "review [request-id]",
+		Short: "View request details for review",
+		Args:  cobra.MaximumNArgs(1),
+		RunE:  reviewCmd.RunE,
+	}
+	revCmd.PersistentFlags().BoolVarP(&flagReviewAll, "all", "a", false, "show requests from all projects")
+	revCmd.PersistentFlags().BoolVar(&flagReviewPool, "review-pool", false, "show requests from configured review pool")
+
+	listCmd := &cobra.Command{
+		Use:   "list",
+		Short: "List pending requests awaiting review",
+		RunE:  reviewListCmd.RunE,
+	}
+	listCmd.Flags().BoolVarP(&flagReviewAll, "all", "a", false, "show requests from all projects")
+
+	showCmd := &cobra.Command{
+		Use:   "show <request-id>",
+		Short: "Show full details of a request",
+		Args:  cobra.ExactArgs(1),
+		RunE:  reviewShowCmd.RunE,
+	}
+
+	revCmd.AddCommand(listCmd, showCmd)
+	root.AddCommand(revCmd)
+
+	return root
+}
+
+func resetReviewFlags() {
+	flagDB = ""
+	flagOutput = "text"
+	flagJSON = false
+	flagProject = ""
+	flagConfig = ""
+	flagReviewAll = false
+	flagReviewPool = false
+}
+
+func TestReviewListCommand_ListsPendingRequests(t *testing.T) {
+	h := testutil.NewHarness(t)
+	resetReviewFlags()
+
+	sess := testutil.MakeSession(t, h.DB,
+		testutil.WithProject(h.ProjectDir),
+		testutil.WithAgent("TestAgent"),
+	)
+	testutil.MakeRequest(t, h.DB, sess,
+		testutil.WithCommand("rm -rf ./build", h.ProjectDir, true),
+		testutil.WithRisk(db.RiskTierDangerous),
+	)
+	testutil.MakeRequest(t, h.DB, sess,
+		testutil.WithCommand("git push --force", h.ProjectDir, true),
+		testutil.WithRisk(db.RiskTierCritical),
+	)
+
+	cmd := newTestReviewCmd(h.DBPath)
+	stdout, err := executeCommandCapture(t, cmd, "review", "list", "-C", h.ProjectDir, "-j")
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var result []map[string]any
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("failed to parse JSON: %v\nstdout: %s", err, stdout)
+	}
+
+	if len(result) < 2 {
+		t.Errorf("expected at least 2 pending requests, got %d", len(result))
+	}
+
+	// Verify structure
+	if len(result) > 0 {
+		req := result[0]
+		if req["id"] == nil {
+			t.Error("expected id to be set")
+		}
+		if req["command"] == nil {
+			t.Error("expected command to be set")
+		}
+		if req["risk_tier"] == nil {
+			t.Error("expected risk_tier to be set")
+		}
+	}
+}
+
+func TestReviewListCommand_EmptyList(t *testing.T) {
+	h := testutil.NewHarness(t)
+	resetReviewFlags()
+
+	cmd := newTestReviewCmd(h.DBPath)
+	stdout, err := executeCommandCapture(t, cmd, "review", "list", "-C", h.ProjectDir, "-j")
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var result []map[string]any
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("failed to parse JSON: %v\nstdout: %s", err, stdout)
+	}
+
+	if len(result) != 0 {
+		t.Errorf("expected 0 requests, got %d", len(result))
+	}
+}
+
+func TestReviewShowCommand_RequiresRequestID(t *testing.T) {
+	h := testutil.NewHarness(t)
+	resetReviewFlags()
+
+	cmd := newTestReviewCmd(h.DBPath)
+	_, _, err := executeCommand(cmd, "review", "show")
+
+	if err == nil {
+		t.Fatal("expected error when request ID is missing")
+	}
+	if !strings.Contains(err.Error(), "accepts 1 arg") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestReviewShowCommand_ShowsRequestDetails(t *testing.T) {
+	h := testutil.NewHarness(t)
+	resetReviewFlags()
+
+	sess := testutil.MakeSession(t, h.DB,
+		testutil.WithProject(h.ProjectDir),
+		testutil.WithAgent("TestAgent"),
+		testutil.WithModel("test-model"),
+	)
+	req := testutil.MakeRequest(t, h.DB, sess,
+		testutil.WithCommand("rm -rf ./build", h.ProjectDir, true),
+		testutil.WithRisk(db.RiskTierDangerous),
+	)
+
+	cmd := newTestReviewCmd(h.DBPath)
+	stdout, err := executeCommandCapture(t, cmd, "review", "show", req.ID, "-j")
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("failed to parse JSON: %v\nstdout: %s", err, stdout)
+	}
+
+	if result["id"] != req.ID {
+		t.Errorf("expected id=%s, got %v", req.ID, result["id"])
+	}
+	if result["status"] != string(db.StatusPending) {
+		t.Errorf("expected status=pending, got %v", result["status"])
+	}
+	if result["requestor_agent"] != "TestAgent" {
+		t.Errorf("expected requestor_agent=TestAgent, got %v", result["requestor_agent"])
+	}
+}
+
+func TestReviewShowCommand_RequestNotFound(t *testing.T) {
+	h := testutil.NewHarness(t)
+	resetReviewFlags()
+
+	cmd := newTestReviewCmd(h.DBPath)
+	_, err := executeCommandCapture(t, cmd, "review", "show", "nonexistent-request-id", "-j")
+
+	if err == nil {
+		t.Fatal("expected error for nonexistent request")
+	}
+}
+
+func TestReviewShowCommand_IncludesReviews(t *testing.T) {
+	h := testutil.NewHarness(t)
+	resetReviewFlags()
+
+	requestorSess := testutil.MakeSession(t, h.DB,
+		testutil.WithProject(h.ProjectDir),
+		testutil.WithAgent("Requestor"),
+		testutil.WithModel("model-a"),
+	)
+	reviewerSess := testutil.MakeSession(t, h.DB,
+		testutil.WithProject(h.ProjectDir),
+		testutil.WithAgent("Reviewer"),
+		testutil.WithModel("model-b"),
+	)
+
+	req := testutil.MakeRequest(t, h.DB, requestorSess,
+		testutil.WithCommand("rm -rf ./build", h.ProjectDir, true),
+	)
+
+	// Add a review
+	review := &db.Review{
+		RequestID:         req.ID,
+		ReviewerSessionID: reviewerSess.ID,
+		ReviewerAgent:     reviewerSess.AgentName,
+		ReviewerModel:     reviewerSess.Model,
+		Decision:          db.DecisionApprove,
+		Comments:          "LGTM",
+	}
+	if err := h.DB.CreateReview(review); err != nil {
+		t.Fatalf("failed to create review: %v", err)
+	}
+
+	cmd := newTestReviewCmd(h.DBPath)
+	stdout, err := executeCommandCapture(t, cmd, "review", "show", req.ID, "-j")
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("failed to parse JSON: %v\nstdout: %s", err, stdout)
+	}
+
+	reviews, ok := result["reviews"].([]any)
+	if !ok {
+		t.Fatal("expected reviews to be an array")
+	}
+	if len(reviews) != 1 {
+		t.Errorf("expected 1 review, got %d", len(reviews))
+	}
+
+	if len(reviews) > 0 {
+		rv := reviews[0].(map[string]any)
+		if rv["reviewer_agent"] != "Reviewer" {
+			t.Errorf("expected reviewer_agent=Reviewer, got %v", rv["reviewer_agent"])
+		}
+		if rv["decision"] != "approve" {
+			t.Errorf("expected decision=approve, got %v", rv["decision"])
+		}
+	}
+}
+
+func TestReviewCommand_NoArgs_ShowsList(t *testing.T) {
+	h := testutil.NewHarness(t)
+	resetReviewFlags()
+
+	sess := testutil.MakeSession(t, h.DB,
+		testutil.WithProject(h.ProjectDir),
+		testutil.WithAgent("TestAgent"),
+	)
+	testutil.MakeRequest(t, h.DB, sess,
+		testutil.WithCommand("rm -rf ./build", h.ProjectDir, true),
+	)
+
+	cmd := newTestReviewCmd(h.DBPath)
+	stdout, err := executeCommandCapture(t, cmd, "review", "-C", h.ProjectDir, "-j")
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should return a list of requests
+	var result []map[string]any
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("failed to parse JSON (should be array): %v\nstdout: %s", err, stdout)
+	}
+
+	if len(result) < 1 {
+		t.Error("expected at least 1 request in list")
+	}
+}
+
+func TestReviewCommand_Help(t *testing.T) {
+	h := testutil.NewHarness(t)
+	resetReviewFlags()
+
+	cmd := newTestReviewCmd(h.DBPath)
+	stdout, _, err := executeCommand(cmd, "review", "--help")
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(stdout, "review") {
+		t.Error("expected help to mention 'review'")
+	}
+	if !strings.Contains(stdout, "list") {
+		t.Error("expected help to mention 'list' subcommand")
+	}
+	if !strings.Contains(stdout, "show") {
+		t.Error("expected help to mention 'show' subcommand")
+	}
+}
