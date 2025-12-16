@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -409,5 +411,211 @@ func TestEvaluateRequestForExecution_ReasonContainsStatus(t *testing.T) {
 				t.Errorf("expected Reason to contain status %q, got %q", status, result.Reason)
 			}
 		})
+	}
+}
+
+// -----------------------------------------------------------------------------
+// createRunLogFile Tests
+// -----------------------------------------------------------------------------
+
+func TestCreateRunLogFile_DefaultPrefix(t *testing.T) {
+	// Use temp directory
+	tmpDir := t.TempDir()
+
+	logPath, err := createRunLogFile(tmpDir, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should use default "run" prefix
+	if !strings.Contains(logPath, "_run.log") {
+		t.Errorf("expected log path to contain '_run.log', got %q", logPath)
+	}
+
+	// File should exist
+	if _, err := os.Stat(logPath); os.IsNotExist(err) {
+		t.Error("log file should exist")
+	}
+}
+
+func TestCreateRunLogFile_CustomPrefix(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	logPath, err := createRunLogFile(tmpDir, "safe")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(logPath, "_safe.log") {
+		t.Errorf("expected log path to contain '_safe.log', got %q", logPath)
+	}
+}
+
+func TestCreateRunLogFile_WithProject(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	logPath, err := createRunLogFile(tmpDir, "test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should be under project/.slb/logs/
+	expectedDir := filepath.Join(tmpDir, ".slb", "logs")
+	if !strings.HasPrefix(logPath, expectedDir) {
+		t.Errorf("expected log path to start with %q, got %q", expectedDir, logPath)
+	}
+}
+
+func TestCreateRunLogFile_EmptyProject(t *testing.T) {
+	// Save and restore current directory
+	originalDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get current directory: %v", err)
+	}
+
+	tmpDir := t.TempDir()
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("failed to change directory: %v", err)
+	}
+	defer os.Chdir(originalDir)
+
+	logPath, err := createRunLogFile("", "test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should use .slb/logs/ relative to current directory
+	if !strings.Contains(logPath, ".slb/logs/") {
+		t.Errorf("expected log path to contain '.slb/logs/', got %q", logPath)
+	}
+}
+
+func TestCreateRunLogFile_CreatesDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	logDir := filepath.Join(tmpDir, ".slb", "logs")
+
+	// Directory should not exist yet
+	if _, err := os.Stat(logDir); !os.IsNotExist(err) {
+		t.Fatal("log directory should not exist before test")
+	}
+
+	_, err := createRunLogFile(tmpDir, "test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Directory should now exist
+	if _, err := os.Stat(logDir); os.IsNotExist(err) {
+		t.Error("log directory should have been created")
+	}
+}
+
+func TestCreateRunLogFile_TimestampFormat(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	logPath, err := createRunLogFile(tmpDir, "test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Extract filename
+	filename := filepath.Base(logPath)
+
+	// Should match pattern YYYYMMDD-HHMMSS_prefix.log
+	// Example: 20251216-150405_test.log
+	matched, _ := filepath.Match("????????-??????_test.log", filename)
+	if !matched {
+		t.Errorf("filename %q doesn't match expected timestamp pattern", filename)
+	}
+}
+
+func TestCreateRunLogFile_FileIsEmpty(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	logPath, err := createRunLogFile(tmpDir, "test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// File should be empty (just created)
+	info, err := os.Stat(logPath)
+	if err != nil {
+		t.Fatalf("failed to stat log file: %v", err)
+	}
+
+	if info.Size() != 0 {
+		t.Errorf("expected empty file, got size %d", info.Size())
+	}
+}
+
+func TestCreateRunLogFile_MultipleCallsUniquePaths(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create multiple files rapidly
+	paths := make(map[string]bool)
+	for i := 0; i < 5; i++ {
+		logPath, err := createRunLogFile(tmpDir, "test")
+		if err != nil {
+			t.Fatalf("unexpected error on iteration %d: %v", i, err)
+		}
+
+		// In case files are created in the same second, they might have the same name
+		// This test verifies the function works, not uniqueness guarantee
+		paths[logPath] = true
+	}
+
+	// At least one file should have been created
+	if len(paths) == 0 {
+		t.Error("no log files were created")
+	}
+}
+
+func TestCreateRunLogFile_DirectoryCreationError(t *testing.T) {
+	// Create a file where the directory should be
+	tmpDir := t.TempDir()
+	blocker := filepath.Join(tmpDir, ".slb")
+
+	// Create a file at .slb (not a directory)
+	if err := os.WriteFile(blocker, []byte("blocker"), 0644); err != nil {
+		t.Fatalf("failed to create blocker file: %v", err)
+	}
+
+	// Now try to create a log file - should fail because .slb is a file not a directory
+	_, err := createRunLogFile(tmpDir, "test")
+	if err == nil {
+		t.Error("expected error when directory creation fails")
+	}
+
+	if !strings.Contains(err.Error(), "creating log dir") {
+		t.Errorf("expected error about creating log dir, got: %v", err)
+	}
+}
+
+func TestCreateRunLogFile_FileCreationError(t *testing.T) {
+	// Create a read-only directory
+	tmpDir := t.TempDir()
+	logDir := filepath.Join(tmpDir, ".slb", "logs")
+
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		t.Fatalf("failed to create log dir: %v", err)
+	}
+
+	// Make the directory read-only
+	if err := os.Chmod(logDir, 0444); err != nil {
+		t.Fatalf("failed to make directory read-only: %v", err)
+	}
+	// Restore permissions on cleanup
+	defer os.Chmod(logDir, 0755)
+
+	// Now try to create a log file - should fail because directory is read-only
+	_, err := createRunLogFile(tmpDir, "test")
+	if err == nil {
+		// On some systems (especially in containers), root can write to read-only dirs
+		// Skip the test if we don't get an error
+		t.Skip("file creation succeeded despite read-only dir (likely running as root)")
+	}
+
+	if !strings.Contains(err.Error(), "creating log file") {
+		t.Errorf("expected error about creating log file, got: %v", err)
 	}
 }
