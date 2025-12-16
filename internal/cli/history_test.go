@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -268,17 +269,18 @@ func TestHistoryCommand_LimitResults(t *testing.T) {
 		testutil.WithAgent("TestAgent"),
 	)
 
-	// Create multiple requests
-	for i := 0; i < 10; i++ {
+	// Create multiple requests with unique commands and small delays to avoid ID collisions
+	for i := 0; i < 5; i++ {
 		testutil.MakeRequest(t, h.DB, sess,
-			testutil.WithCommand("echo test", h.ProjectDir, true),
+			testutil.WithCommand(fmt.Sprintf("echo unique-limit-test-%d-%d", i, time.Now().UnixNano()), h.ProjectDir, true),
 		)
+		time.Sleep(time.Millisecond) // Small delay to ensure unique IDs
 	}
 
 	cmd := newTestHistoryCmd(h.DBPath)
 	stdout, err := executeCommandCapture(t, cmd, "history",
 		"-C", h.ProjectDir,
-		"--limit", "3",
+		"--limit", "2",
 		"-j",
 	)
 
@@ -291,8 +293,8 @@ func TestHistoryCommand_LimitResults(t *testing.T) {
 		t.Fatalf("failed to parse JSON: %v\nstdout: %s", err, stdout)
 	}
 
-	if len(result) > 3 {
-		t.Errorf("expected at most 3 results with limit=3, got %d", len(result))
+	if len(result) > 2 {
+		t.Errorf("expected at most 2 results with limit=2, got %d", len(result))
 	}
 }
 

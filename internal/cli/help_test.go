@@ -1,7 +1,10 @@
 package cli
 
 import (
+	"bytes"
+	"io"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/charmbracelet/lipgloss"
@@ -185,6 +188,79 @@ func TestFooterLegend(t *testing.T) {
 	result = footerLegend(false)
 	if result == "" {
 		t.Error("expected non-empty footer legend without unicode")
+	}
+}
+
+func TestShowQuickReference(t *testing.T) {
+	// Save original environment
+	originalLang := os.Getenv("LANG")
+	originalTerm := os.Getenv("TERM")
+	defer func() {
+		os.Setenv("LANG", originalLang)
+		os.Setenv("TERM", originalTerm)
+	}()
+
+	// Set up environment for testing
+	os.Setenv("LANG", "en_US.UTF-8")
+	os.Setenv("TERM", "xterm")
+
+	// Capture stdout
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	showQuickReference()
+
+	w.Close()
+	os.Stdout = oldStdout
+
+	var buf bytes.Buffer
+	io.Copy(&buf, r)
+	output := buf.String()
+
+	// Should produce non-empty output
+	if output == "" {
+		t.Error("expected non-empty output from showQuickReference")
+	}
+
+	// Should contain SLB reference content
+	if !strings.Contains(output, "SLB") && !strings.Contains(output, "slb") {
+		t.Error("expected output to contain SLB reference")
+	}
+}
+
+func TestShowQuickReference_NonUnicode(t *testing.T) {
+	// Save original environment
+	originalLang := os.Getenv("LANG")
+	originalTerm := os.Getenv("TERM")
+	defer func() {
+		os.Setenv("LANG", originalLang)
+		os.Setenv("TERM", originalTerm)
+	}()
+
+	// Set up dumb terminal (no unicode)
+	os.Setenv("LANG", "C")
+	os.Setenv("TERM", "dumb")
+	os.Unsetenv("LC_ALL")
+	os.Unsetenv("LC_CTYPE")
+
+	// Capture stdout
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	showQuickReference()
+
+	w.Close()
+	os.Stdout = oldStdout
+
+	var buf bytes.Buffer
+	io.Copy(&buf, r)
+	output := buf.String()
+
+	// Should still produce output
+	if output == "" {
+		t.Error("expected non-empty output from showQuickReference in non-unicode mode")
 	}
 }
 
