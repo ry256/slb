@@ -30,3 +30,6 @@ coverage.out
 dashboard_debug.txt
 build/slb
 slb
+
+# SLB runtime logs
+.slb/
