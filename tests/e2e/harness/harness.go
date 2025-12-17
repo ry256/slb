@@ -2,6 +2,8 @@
 package harness
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -369,15 +371,15 @@ func containsAny(s string, substrs ...string) bool {
 	return false
 }
 
-// randomID generates a random hex ID for test entities.
+// randomID generates a random hex ID for test entities using crypto/rand.
 func randomID(n int) string {
-	const hex = "0123456789abcdef"
-	b := make([]byte, n)
-	now := time.Now().UnixNano()
-	for i := range b {
-		b[i] = hex[(now+int64(i))%int64(len(hex))]
+	// n is the number of hex characters, so we need n/2 bytes (rounded up)
+	byteLen := (n + 1) / 2
+	b := make([]byte, byteLen)
+	if _, err := rand.Read(b); err != nil {
+		panic("failed to generate random ID: " + err.Error())
 	}
-	return string(b)
+	return hex.EncodeToString(b)[:n]
 }
 
 type gitError struct {
