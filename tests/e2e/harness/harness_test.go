@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/Dicklesworthstone/slb/internal/db"
@@ -139,5 +140,142 @@ func TestLogBuffer(t *testing.T) {
 	buf.Clear()
 	if len(buf.Entries()) != 0 {
 		t.Error("buffer should be empty after clear")
+	}
+}
+
+func TestE2EEnvironment_RequestTier(t *testing.T) {
+	env := NewE2EEnvironment(t)
+
+	sess := env.CreateSession("TestAgent", "test-program", "test-model")
+
+	// Test CRITICAL tier (rm -rf command)
+	env.Step("Testing CRITICAL tier classification")
+	criticalReq := env.SubmitRequest(sess, "rm -rf /important", "Test critical")
+	env.AssertRequestTier(criticalReq, db.RiskTierCritical)
+
+	// Test DANGEROUS tier (rm without -rf)
+	env.Step("Testing DANGEROUS tier classification")
+	dangerousReq := env.SubmitRequest(sess, "rm sensitive.txt", "Test dangerous")
+	env.AssertRequestTier(dangerousReq, db.RiskTierDangerous)
+
+	// Test CAUTION tier (safe command)
+	env.Step("Testing CAUTION tier classification")
+	cautionReq := env.SubmitRequest(sess, "go build ./...", "Test caution")
+	env.AssertRequestTier(cautionReq, db.RiskTierCaution)
+}
+
+func TestE2EEnvironment_RequestStatusByID(t *testing.T) {
+	env := NewE2EEnvironment(t)
+
+	sess := env.CreateSession("TestAgent", "test-program", "test-model")
+	req := env.SubmitRequest(sess, "echo hello", "Test status by ID")
+
+	env.Step("Asserting request status by ID")
+	env.AssertRequestStatusByID(req.ID, db.StatusPending)
+
+	// Get status helper
+	status := env.GetRequestStatus(req.ID)
+	if status != db.StatusPending {
+		t.Errorf("expected pending status, got %s", status)
+	}
+}
+
+func TestE2EEnvironment_SessionEnded(t *testing.T) {
+	env := NewE2EEnvironment(t)
+
+	sess := env.CreateSession("TestAgent", "test-program", "test-model")
+	env.AssertSessionActive(sess)
+
+	env.Step("Ending session")
+	if err := env.DB.EndSession(sess.ID); err != nil {
+		t.Fatalf("EndSession: %v", err)
+	}
+
+	env.AssertSessionEnded(sess)
+}
+
+func TestE2EEnvironment_RejectRequest(t *testing.T) {
+	env := NewE2EEnvironment(t)
+
+	requestor := env.CreateSession("Requestor", "claude-code", "opus")
+	reviewer := env.CreateSession("Reviewer", "codex", "gpt-4")
+
+	req := env.SubmitRequest(requestor, "dangerous command", "Test rejection")
+	env.AssertRequestStatus(req, db.StatusPending)
+
+	env.Step("Rejecting the request")
+	review := env.RejectRequest(req, reviewer, "Not safe")
+
+	if review.Decision != db.DecisionReject {
+		t.Errorf("expected reject decision, got %s", review.Decision)
+	}
+
+	env.AssertReviewCount(req, 1)
+}
+
+func TestE2EEnvironment_GitHead(t *testing.T) {
+	env := NewE2EEnvironment(t)
+
+	env.Step("Getting initial HEAD")
+	head1 := env.GitHead()
+	if len(head1) < 7 {
+		t.Errorf("HEAD too short: %s", head1)
+	}
+
+	env.Step("Creating a commit")
+	env.WriteTestFile("test.txt", []byte("content"))
+	hash := env.GitCommit("Add test file")
+
+	env.Step("Asserting HEAD matches commit")
+	env.AssertGitHead(hash)
+}
+
+func TestE2EEnvironment_FileNotExists(t *testing.T) {
+	env := NewE2EEnvironment(t)
+
+	env.Step("Asserting non-existent file")
+	env.AssertFileNotExists("nonexistent.txt")
+
+	env.Step("Creating file")
+	env.WriteTestFile("exists.txt", []byte("content"))
+	env.AssertFileExists("exists.txt")
+}
+
+func TestE2EEnvironment_NoErrorAndError(t *testing.T) {
+	env := NewE2EEnvironment(t)
+
+	env.Step("Testing AssertNoError with nil")
+	env.AssertNoError(nil, "should pass")
+
+	env.Step("Testing AssertError with actual error")
+	env.AssertError(fmt.Errorf("expected error"), "should pass with error")
+
+	env.Step("Testing error logging")
+	env.Logger.Error("Test error message: %s", "test")
+}
+
+func TestE2EEnvironment_Elapsed(t *testing.T) {
+	env := NewE2EEnvironment(t)
+
+	env.Step("Checking elapsed time")
+	elapsed := env.Elapsed()
+	if elapsed < 0 {
+		t.Error("elapsed time should be non-negative")
+	}
+}
+
+func TestGitError(t *testing.T) {
+	err := &gitError{
+		op:  "test",
+		err: fmt.Errorf("mock error"),
+		out: "mock output",
+	}
+
+	msg := err.Error()
+	if msg == "" {
+		t.Error("error message should not be empty")
+	}
+	if !containsAny(msg, "test", "mock error", "mock output") {
+		t.Errorf("error message missing expected content: %s", msg)
 	}
 }
