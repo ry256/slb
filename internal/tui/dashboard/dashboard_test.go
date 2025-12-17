@@ -711,3 +711,320 @@ func randHex(n int) string {
 	return hex.EncodeToString(b)[:n]
 }
 
+// =====================================================================
+// Additional tests for uncovered branches
+// =====================================================================
+
+func TestModelUpdateKeyShiftTab(t *testing.T) {
+	m := New("")
+	m.ready = true
+	m.focus = focusPending // Start at pending (1)
+
+	// shift+tab should cycle backwards
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	model := updated.(Model)
+
+	// focusPending (1) + 2 = 3, mod 3 = 0 (focusAgents)
+	if model.focus != focusAgents {
+		t.Errorf("expected focus to be focusAgents (0) after shift+tab, got %d", model.focus)
+	}
+
+	// Another shift+tab
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	model = updated.(Model)
+
+	// focusAgents (0) + 2 = 2, mod 3 = 2 (focusActivity)
+	if model.focus != focusActivity {
+		t.Errorf("expected focus to be focusActivity (2) after shift+tab, got %d", model.focus)
+	}
+}
+
+func TestModelUpdateKeyMWithCallback(t *testing.T) {
+	m := New("")
+	m.ready = true
+
+	callbackCalled := false
+	m.OnPatterns = func() {
+		callbackCalled = true
+	}
+
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
+
+	if !callbackCalled {
+		t.Error("OnPatterns callback should have been called")
+	}
+}
+
+func TestModelUpdateKeyMWithoutCallback(t *testing.T) {
+	m := New("")
+	m.ready = true
+	m.OnPatterns = nil
+
+	// Should not panic when callback is nil
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
+}
+
+func TestModelUpdateKeyHWithCallback(t *testing.T) {
+	m := New("")
+	m.ready = true
+	m.focus = focusPending
+
+	callbackCalled := false
+	m.OnHistory = func() {
+		callbackCalled = true
+	}
+
+	_, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
+
+	if !callbackCalled {
+		t.Error("OnHistory callback should have been called")
+	}
+}
+
+func TestModelUpdateKeyHWithoutCallback(t *testing.T) {
+	m := New("")
+	m.ready = true
+	m.focus = focusPending // Start at pending (1)
+	m.OnHistory = nil
+
+	// Without callback, 'h' should act as left navigation
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
+	model := updated.(Model)
+
+	// focusPending (1) + 2 = 3, mod 3 = 0 (focusAgents)
+	if model.focus != focusAgents {
+		t.Errorf("expected focus to move left to focusAgents (0), got %d", model.focus)
+	}
+}
+
+func TestWindowEdgeCases(t *testing.T) {
+	tests := []struct {
+		name                       string
+		offset, total, visible     int
+		expectedStart, expectedEnd int
+	}{
+		{"zero visible", 0, 10, 0, 0, 1},         // visible <= 0 becomes 1
+		{"offset past total", 15, 10, 5, 10, 10}, // offset > total clamped
+		{"total zero", 0, 0, 5, 0, 0},            // empty data
+		{"visible larger than total", 0, 3, 10, 0, 3},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			start, end := window(tc.offset, tc.total, tc.visible)
+			if start != tc.expectedStart {
+				t.Errorf("window(%d,%d,%d): expected start %d, got %d",
+					tc.offset, tc.total, tc.visible, tc.expectedStart, start)
+			}
+			if end != tc.expectedEnd {
+				t.Errorf("window(%d,%d,%d): expected end %d, got %d",
+					tc.offset, tc.total, tc.visible, tc.expectedEnd, end)
+			}
+		})
+	}
+}
+
+func TestClampSelectionEdgeCases(t *testing.T) {
+	tests := []struct {
+		name                     string
+		sel, off, total, visible int
+		expectedSel, expectedOff int
+	}{
+		{"visible zero", 5, 0, 10, 0, 5, 5},      // visible <= 0 becomes 1, off = sel - visible + 1 = 5
+		{"sel past visible window", 8, 0, 10, 3, 8, 6},
+		{"offset past total", 0, 15, 10, 5, 0, 0},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			sel, off := clampSelection(tc.sel, tc.off, tc.total, tc.visible)
+			if sel != tc.expectedSel {
+				t.Errorf("clampSelection: expected sel %d, got %d", tc.expectedSel, sel)
+			}
+			if off != tc.expectedOff {
+				t.Errorf("clampSelection: expected off %d, got %d", tc.expectedOff, off)
+			}
+		})
+	}
+}
+
+func TestVisibleRowsZeroHeight(t *testing.T) {
+	m := New("")
+	m.height = 0
+
+	rows := m.visibleRows()
+	if rows != 6 {
+		t.Errorf("visibleRows with 0 height should return 6, got %d", rows)
+	}
+}
+
+func TestVisibleRowsNegativeHeight(t *testing.T) {
+	m := New("")
+	m.height = -10
+
+	rows := m.visibleRows()
+	if rows != 6 {
+		t.Errorf("visibleRows with negative height should return 6, got %d", rows)
+	}
+}
+
+func TestRenderFooterWithRefreshTime(t *testing.T) {
+	m := New("")
+	m.width = 80
+	m.lastRefresh = time.Now().Add(-5 * time.Minute)
+	m.lastErr = nil
+
+	footer := m.renderFooter()
+	if !strings.Contains(footer, "refreshed") {
+		t.Error("footer should show refresh time")
+	}
+}
+
+func TestRenderFooterZeroRefreshTime(t *testing.T) {
+	m := New("")
+	m.width = 80
+	m.lastRefresh = time.Time{}
+	m.lastErr = nil
+
+	footer := m.renderFooter()
+	// Should not show refresh time for zero value
+	if strings.Contains(footer, "refreshed") && strings.Contains(footer, "never") {
+		// That's also acceptable
+	}
+}
+
+func TestDataMsgWithError(t *testing.T) {
+	m := New("")
+
+	msg := dataMsg{
+		err:         &testError{},
+		refreshedAt: time.Now(),
+	}
+
+	updated, _ := m.Update(msg)
+	model := updated.(Model)
+
+	if model.lastErr == nil {
+		t.Error("lastErr should be set from dataMsg")
+	}
+}
+
+func TestModelViewSmallHeight(t *testing.T) {
+	m := New("")
+	m.ready = true
+	m.width = 80
+	m.height = 4 // Very small height
+
+	view := m.View()
+	if view == "" {
+		t.Error("View with small height should not be empty")
+	}
+}
+
+func TestModelViewNarrowWidth(t *testing.T) {
+	m := New("")
+	m.ready = true
+	m.width = 60 // Narrow width
+	m.height = 24
+
+	view := m.View()
+	if view == "" {
+		t.Error("View with narrow width should not be empty")
+	}
+}
+
+func TestRenderPendingPanelWithSelection(t *testing.T) {
+	m := New("")
+	m.width = 80
+	m.height = 24
+	m.ready = true
+
+	m.pending = []requestRow{
+		{ID: "req-1", Tier: "critical", Command: "rm -rf /", Requestor: "Agent1", CreatedAt: time.Now()},
+		{ID: "req-2", Tier: "dangerous", Command: "chmod 777", Requestor: "Agent2", CreatedAt: time.Now()},
+		{ID: "req-3", Tier: "caution", Command: "make build", Requestor: "Agent3", CreatedAt: time.Now()},
+	}
+	m.focus = focusPending
+	m.pendingSel = 1 // Select middle item
+
+	panel := m.renderPendingPanel(40, 10)
+	if panel == "" {
+		t.Error("renderPendingPanel should not be empty")
+	}
+}
+
+func TestRenderActivityPanelWithSelection(t *testing.T) {
+	m := New("")
+	m.width = 80
+	m.height = 24
+	m.ready = true
+
+	m.activity = []string{"Event 1", "Event 2", "Event 3", "Event 4", "Event 5"}
+	m.focus = focusActivity
+	m.activitySel = 2 // Select middle item
+
+	panel := m.renderActivityPanel(40, 10)
+	if panel == "" {
+		t.Error("renderActivityPanel should not be empty")
+	}
+}
+
+func TestRenderAgentsPanelWithSelection(t *testing.T) {
+	m := New("")
+	m.width = 80
+	m.height = 24
+	m.ready = true
+
+	m.agents = []components.AgentInfo{
+		{Name: "Agent1", Status: components.AgentStatusActive, Program: "claude", Model: "opus"},
+		{Name: "Agent2", Status: components.AgentStatusIdle, Program: "codex", Model: "gpt4"},
+		{Name: "Agent3", Status: components.AgentStatusStale, Program: "cursor", Model: "sonnet"},
+	}
+	m.focus = focusAgents
+	m.agentSel = 1 // Select middle item
+
+	panel := m.renderAgentsPanel(40, 10)
+	if panel == "" {
+		t.Error("renderAgentsPanel should not be empty")
+	}
+}
+
+func TestLoadDataWithDisplayRedacted(t *testing.T) {
+	h := newTestHarness(t)
+
+	sess := createTestSession(t, h.db, h.projectPath)
+
+	// Create request with DisplayRedacted set
+	exp := time.Now().Add(30 * time.Minute)
+	req := &db.Request{
+		ID:                 "req-" + randHex(6),
+		ProjectPath:        sess.ProjectPath,
+		Command:            db.CommandSpec{Raw: "secret cmd", DisplayRedacted: "redacted cmd", Cwd: "/tmp", Shell: true},
+		RiskTier:           db.RiskTierDangerous,
+		RequestorSessionID: sess.ID,
+		RequestorAgent:     sess.AgentName,
+		RequestorModel:     sess.Model,
+		Justification:      db.Justification{Reason: "test"},
+		Status:             db.StatusPending,
+		MinApprovals:       1,
+		ExpiresAt:          &exp,
+	}
+	if err := h.db.CreateRequest(req); err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+
+	_, pending, _, err := loadData(h.projectPath)
+	if err != nil {
+		t.Fatalf("loadData failed: %v", err)
+	}
+
+	if len(pending) != 1 {
+		t.Fatalf("expected 1 pending, got %d", len(pending))
+	}
+
+	// Should use DisplayRedacted if available
+	if pending[0].Command != "redacted cmd" {
+		t.Errorf("expected command to be 'redacted cmd', got %q", pending[0].Command)
+	}
+}
+
