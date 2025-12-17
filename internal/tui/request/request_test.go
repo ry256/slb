@@ -978,6 +978,53 @@ func TestDetailModelViewExpired(t *testing.T) {
 	}
 }
 
+// ============== renderFooter Coverage Tests ==============
+
+func TestRenderFooterWithCanApprove(t *testing.T) {
+	req := testRequest()
+	req.Status = db.StatusPending
+	session := &db.Session{ID: "session-2", AgentName: "Reviewer"}
+
+	m := NewDetailModel(req, nil).WithSession(session)
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	view := m.View()
+	// When canApprove() is true, the footer should show [a]pprove and [r]eject
+	if !strings.Contains(view, "pprove") {
+		t.Error("Footer should show approve option when canApprove() is true")
+	}
+	if !strings.Contains(view, "eject") {
+		t.Error("Footer should show reject option when canReject() is true")
+	}
+}
+
+func TestRenderFooterWithCanExecute(t *testing.T) {
+	req := testRequest()
+	req.Status = db.StatusApproved
+
+	m := NewDetailModel(req, nil)
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	view := m.View()
+	// When canExecute() is true, the footer should show [x] execute
+	if !strings.Contains(view, "execute") {
+		t.Error("Footer should show execute option when canExecute() is true")
+	}
+}
+
+func TestRenderFooterWithCopied(t *testing.T) {
+	req := testRequest()
+	m := NewDetailModel(req, nil)
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m.copied = true
+
+	view := m.View()
+	// When copied is true, the footer should show "Copied!" instead of [c]opy
+	if !strings.Contains(view, "Copied!") {
+		t.Error("Footer should show 'Copied!' when copied flag is true")
+	}
+}
+
 // Test render functions don't panic with edge cases
 func TestRenderFunctionsEdgeCases(t *testing.T) {
 	// Empty justification
