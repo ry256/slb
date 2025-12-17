@@ -366,6 +366,55 @@ func TestDetailModelViewWithReviews(t *testing.T) {
 	}
 }
 
+func TestDetailModelViewWithRejectionReview(t *testing.T) {
+	req := testRequest()
+	reviews := []db.Review{
+		{
+			Decision:          db.DecisionReject,
+			ReviewerAgent:     "Rejector1",
+			ReviewerSessionID: "session-3",
+			Comments:          "Too dangerous",
+			CreatedAt:         time.Now(),
+		},
+	}
+
+	m := NewDetailModel(req, reviews)
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	view := m.View()
+	if view == "" {
+		t.Error("View should not be empty with rejection review")
+	}
+}
+
+func TestDetailModelViewWithMixedReviews(t *testing.T) {
+	req := testRequest()
+	reviews := []db.Review{
+		{
+			Decision:          db.DecisionApprove,
+			ReviewerAgent:     "Approver1",
+			ReviewerSessionID: "session-3",
+			Comments:          "LGTM",
+			CreatedAt:         time.Now(),
+		},
+		{
+			Decision:          db.DecisionReject,
+			ReviewerAgent:     "Rejector1",
+			ReviewerSessionID: "session-4",
+			Comments:          "Needs more review",
+			CreatedAt:         time.Now(),
+		},
+	}
+
+	m := NewDetailModel(req, reviews)
+	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	view := m.View()
+	if view == "" {
+		t.Error("View should not be empty with mixed reviews")
+	}
+}
+
 func TestDetailModelViewWithDryRun(t *testing.T) {
 	req := testRequest()
 	req.DryRun = &db.DryRunResult{
