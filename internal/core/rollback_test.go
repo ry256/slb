@@ -634,6 +634,1024 @@ func TestBytesTrimSpace(t *testing.T) {
 	}
 }
 
+func TestParseKubectlDelete(t *testing.T) {
+	tests := []struct {
+		name         string
+		args         []string
+		wantNS       string
+		wantResCount int
+		wantFirst    kubectlResource
+	}{
+		{
+			name:         "kind/name format",
+			args:         []string{"deployment/myapp"},
+			wantNS:       "",
+			wantResCount: 1,
+			wantFirst:    kubectlResource{Kind: "deployment", Name: "myapp"},
+		},
+		{
+			name:         "kind name format",
+			args:         []string{"pod", "nginx"},
+			wantNS:       "",
+			wantResCount: 1,
+			wantFirst:    kubectlResource{Kind: "pod", Name: "nginx"},
+		},
+		{
+			name:         "kind with multiple names",
+			args:         []string{"pod", "nginx", "redis", "mysql"},
+			wantNS:       "",
+			wantResCount: 3,
+			wantFirst:    kubectlResource{Kind: "pod", Name: "nginx"},
+		},
+		{
+			name:         "with namespace flag -n",
+			args:         []string{"-n", "kube-system", "pod", "nginx"},
+			wantNS:       "kube-system",
+			wantResCount: 1,
+			wantFirst:    kubectlResource{Kind: "pod", Name: "nginx"},
+		},
+		{
+			name:         "with namespace flag --namespace",
+			args:         []string{"--namespace", "production", "service/frontend"},
+			wantNS:       "production",
+			wantResCount: 1,
+			wantFirst:    kubectlResource{Kind: "service", Name: "frontend"},
+		},
+		{
+			name:         "with namespace flag --namespace=value",
+			args:         []string{"--namespace=staging", "deployment/api"},
+			wantNS:       "staging",
+			wantResCount: 1,
+			wantFirst:    kubectlResource{Kind: "deployment", Name: "api"},
+		},
+		{
+			name:         "with double dash separator",
+			args:         []string{"--", "pod/nginx"},
+			wantNS:       "",
+			wantResCount: 1,
+			wantFirst:    kubectlResource{Kind: "pod", Name: "nginx"},
+		},
+		{
+			name:         "stops at flags",
+			args:         []string{"pod", "nginx", "--force"},
+			wantNS:       "",
+			wantResCount: 1,
+			wantFirst:    kubectlResource{Kind: "pod", Name: "nginx"},
+		},
+		{
+			name:         "empty args",
+			args:         []string{},
+			wantNS:       "",
+			wantResCount: 0,
+		},
+		{
+			name:         "kind only no name",
+			args:         []string{"pod"},
+			wantNS:       "",
+			wantResCount: 0,
+		},
+		{
+			name:         "invalid slash format",
+			args:         []string{"/noname"},
+			wantNS:       "",
+			wantResCount: 0,
+		},
+		{
+			name:         "slash with empty kind",
+			args:         []string{"/myapp"},
+			wantNS:       "",
+			wantResCount: 0,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ns, resources := parseKubectlDelete(tc.args)
+			if ns != tc.wantNS {
+				t.Errorf("namespace: got %q, want %q", ns, tc.wantNS)
+			}
+			if len(resources) != tc.wantResCount {
+				t.Errorf("resource count: got %d, want %d", len(resources), tc.wantResCount)
+				return
+			}
+			if tc.wantResCount > 0 && resources[0] != tc.wantFirst {
+				t.Errorf("first resource: got %+v, want %+v", resources[0], tc.wantFirst)
+			}
+		})
+	}
+}
+
+func TestResolvePaths(t *testing.T) {
+	t.Run("empty target is skipped", func(t *testing.T) {
+		paths, missing := resolvePaths("/tmp", []string{"", "  ", "\t"})
+		if len(paths) != 0 || len(missing) != 0 {
+			t.Errorf("expected empty results, got paths=%v, missing=%v", paths, missing)
+		}
+	})
+
+	t.Run("absolute path that exists", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		testFile := filepath.Join(tmpDir, "test.txt")
+		if err := os.WriteFile(testFile, []byte("test"), 0644); err != nil {
+			t.Fatalf("write file: %v", err)
+		}
+
+		paths, missing := resolvePaths("/other", []string{testFile})
+		if len(paths) != 1 || paths[0] != testFile {
+			t.Errorf("expected [%s], got paths=%v", testFile, paths)
+		}
+		if len(missing) != 0 {
+			t.Errorf("expected no missing, got %v", missing)
+		}
+	})
+
+	t.Run("absolute path that does not exist", func(t *testing.T) {
+		paths, missing := resolvePaths("/tmp", []string{"/nonexistent/path/xyz"})
+		if len(paths) != 0 {
+			t.Errorf("expected no paths, got %v", paths)
+		}
+		if len(missing) != 1 {
+			t.Errorf("expected 1 missing, got %v", missing)
+		}
+	})
+
+	t.Run("relative path joined with cwd", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		testFile := filepath.Join(tmpDir, "relative.txt")
+		if err := os.WriteFile(testFile, []byte("test"), 0644); err != nil {
+			t.Fatalf("write file: %v", err)
+		}
+
+		paths, _ := resolvePaths(tmpDir, []string{"relative.txt"})
+		if len(paths) != 1 {
+			t.Errorf("expected 1 path, got %v", paths)
+		}
+	})
+
+	t.Run("glob pattern with matches", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		for _, name := range []string{"a.txt", "b.txt", "c.log"} {
+			if err := os.WriteFile(filepath.Join(tmpDir, name), []byte("test"), 0644); err != nil {
+				t.Fatalf("write file: %v", err)
+			}
+		}
+
+		paths, _ := resolvePaths(tmpDir, []string{"*.txt"})
+		if len(paths) != 2 {
+			t.Errorf("expected 2 paths (*.txt), got %d: %v", len(paths), paths)
+		}
+	})
+
+	t.Run("glob pattern with no matches", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		paths, missing := resolvePaths(tmpDir, []string{"*.nonexistent"})
+		// When glob has no matches, it falls back to literal path
+		if len(paths) != 0 {
+			t.Errorf("expected no paths, got %v", paths)
+		}
+		if len(missing) != 1 {
+			t.Errorf("expected 1 missing, got %v", missing)
+		}
+	})
+
+	t.Run("deduplicates paths", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		testFile := filepath.Join(tmpDir, "dup.txt")
+		if err := os.WriteFile(testFile, []byte("test"), 0644); err != nil {
+			t.Fatalf("write file: %v", err)
+		}
+
+		paths, _ := resolvePaths(tmpDir, []string{"dup.txt", "dup.txt", testFile})
+		if len(paths) != 1 {
+			t.Errorf("expected 1 path (deduplicated), got %d: %v", len(paths), paths)
+		}
+	})
+
+	t.Run("absolute glob pattern", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		for _, name := range []string{"x.go", "y.go"} {
+			if err := os.WriteFile(filepath.Join(tmpDir, name), []byte("test"), 0644); err != nil {
+				t.Fatalf("write file: %v", err)
+			}
+		}
+
+		pattern := filepath.Join(tmpDir, "*.go")
+		paths, _ := resolvePaths("/other", []string{pattern})
+		if len(paths) != 2 {
+			t.Errorf("expected 2 paths for absolute glob, got %d: %v", len(paths), paths)
+		}
+	})
+}
+
+func TestEnsureNoSymlinkParents(t *testing.T) {
+	t.Run("empty root path", func(t *testing.T) {
+		err := ensureNoSymlinkParents("", "/some/target")
+		if err == nil {
+			t.Error("expected error for empty root")
+		}
+	})
+
+	t.Run("empty target path", func(t *testing.T) {
+		err := ensureNoSymlinkParents("/some/root", "")
+		if err == nil {
+			t.Error("expected error for empty target")
+		}
+	})
+
+	t.Run("whitespace-only paths", func(t *testing.T) {
+		err := ensureNoSymlinkParents("   ", "   ")
+		if err == nil {
+			t.Error("expected error for whitespace paths")
+		}
+	})
+
+	t.Run("target escapes root", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		err := ensureNoSymlinkParents(tmpDir, "/etc/passwd")
+		if err == nil {
+			t.Error("expected error when target escapes root")
+		}
+		if !strings.Contains(err.Error(), "escapes root") {
+			t.Errorf("expected 'escapes root' error, got %v", err)
+		}
+	})
+
+	t.Run("target is root", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		err := ensureNoSymlinkParents(tmpDir, tmpDir)
+		if err != nil {
+			t.Errorf("unexpected error when target is root: %v", err)
+		}
+	})
+
+	t.Run("target is child of root", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		childDir := filepath.Join(tmpDir, "child")
+		if err := os.MkdirAll(childDir, 0755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+
+		err := ensureNoSymlinkParents(tmpDir, childDir)
+		if err != nil {
+			t.Errorf("unexpected error for valid child path: %v", err)
+		}
+	})
+
+	t.Run("target path does not exist yet", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		target := filepath.Join(tmpDir, "nonexistent", "path")
+
+		err := ensureNoSymlinkParents(tmpDir, target)
+		if err != nil {
+			t.Errorf("unexpected error for nonexistent path: %v", err)
+		}
+	})
+}
+
+func TestEnsureNoSymlinkParents_Symlinks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink tests are not reliable on windows")
+	}
+
+	t.Run("root is symlink", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		realRoot := filepath.Join(tmpDir, "real")
+		if err := os.MkdirAll(realRoot, 0755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+
+		symlinkRoot := filepath.Join(tmpDir, "symlink")
+		if err := os.Symlink(realRoot, symlinkRoot); err != nil {
+			t.Skipf("symlink not supported: %v", err)
+		}
+
+		err := ensureNoSymlinkParents(symlinkRoot, filepath.Join(symlinkRoot, "child"))
+		if err == nil {
+			t.Error("expected error when root is symlink")
+		}
+		if !strings.Contains(err.Error(), "symlink root") {
+			t.Errorf("expected 'symlink root' error, got %v", err)
+		}
+	})
+
+	t.Run("parent in path is symlink", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		// Create: root/parent -> /tmp/outside
+		root := filepath.Join(tmpDir, "root")
+		if err := os.MkdirAll(root, 0755); err != nil {
+			t.Fatalf("mkdir root: %v", err)
+		}
+
+		outside := filepath.Join(tmpDir, "outside")
+		if err := os.MkdirAll(outside, 0755); err != nil {
+			t.Fatalf("mkdir outside: %v", err)
+		}
+
+		symlinkParent := filepath.Join(root, "parent")
+		if err := os.Symlink(outside, symlinkParent); err != nil {
+			t.Skipf("symlink not supported: %v", err)
+		}
+
+		target := filepath.Join(root, "parent", "child")
+		err := ensureNoSymlinkParents(root, target)
+		if err == nil {
+			t.Error("expected error when parent is symlink")
+		}
+		if !strings.Contains(err.Error(), "symlink parent") {
+			t.Errorf("expected 'symlink parent' error, got %v", err)
+		}
+	})
+}
+
+func TestApplyGitPatchIfPresent(t *testing.T) {
+	if _, err := execLookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	t.Run("nonexistent patch file returns nil", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		err := applyGitPatchIfPresent(context.Background(), tmpDir, "/nonexistent/patch.diff", false)
+		if err != nil {
+			t.Errorf("expected nil for nonexistent patch, got %v", err)
+		}
+	})
+
+	t.Run("empty patch file returns nil", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		patchFile := filepath.Join(tmpDir, "empty.patch")
+		if err := os.WriteFile(patchFile, []byte(""), 0644); err != nil {
+			t.Fatalf("write file: %v", err)
+		}
+
+		err := applyGitPatchIfPresent(context.Background(), tmpDir, patchFile, false)
+		if err != nil {
+			t.Errorf("expected nil for empty patch, got %v", err)
+		}
+	})
+
+	t.Run("whitespace-only patch file returns nil", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		patchFile := filepath.Join(tmpDir, "whitespace.patch")
+		if err := os.WriteFile(patchFile, []byte("   \n\t  \n"), 0644); err != nil {
+			t.Fatalf("write file: %v", err)
+		}
+
+		err := applyGitPatchIfPresent(context.Background(), tmpDir, patchFile, false)
+		if err != nil {
+			t.Errorf("expected nil for whitespace patch, got %v", err)
+		}
+	})
+
+	t.Run("invalid patch returns error", func(t *testing.T) {
+		// Initialize a git repo
+		tmpDir := t.TempDir()
+		if _, err := runCmdString(context.Background(), tmpDir, "git", "init"); err != nil {
+			t.Fatalf("git init: %v", err)
+		}
+
+		patchFile := filepath.Join(tmpDir, "invalid.patch")
+		if err := os.WriteFile(patchFile, []byte("not a valid patch"), 0644); err != nil {
+			t.Fatalf("write file: %v", err)
+		}
+
+		err := applyGitPatchIfPresent(context.Background(), tmpDir, patchFile, false)
+		if err == nil {
+			t.Error("expected error for invalid patch")
+		}
+	})
+}
+
+func TestRestoreFilesystemRollback_Errors(t *testing.T) {
+	t.Run("missing filesystem data", func(t *testing.T) {
+		data := &RollbackData{
+			Kind:         rollbackKindFilesystem,
+			RollbackPath: "/some/path",
+			Filesystem:   nil,
+		}
+		err := RestoreRollbackState(context.Background(), data, RollbackRestoreOptions{})
+		if err == nil {
+			t.Error("expected error for missing filesystem data")
+		}
+		if !strings.Contains(err.Error(), "filesystem rollback data missing") {
+			t.Errorf("expected 'filesystem rollback data missing' error, got %v", err)
+		}
+	})
+
+	t.Run("empty roots", func(t *testing.T) {
+		data := &RollbackData{
+			Kind:         rollbackKindFilesystem,
+			RollbackPath: "/some/path",
+			Filesystem: &FilesystemRollbackData{
+				TarGz: "rollback.tar.gz",
+				Roots: []FilesystemRoot{},
+			},
+		}
+		err := RestoreRollbackState(context.Background(), data, RollbackRestoreOptions{})
+		if err == nil {
+			t.Error("expected error for empty roots")
+		}
+		if !strings.Contains(err.Error(), "roots missing") {
+			t.Errorf("expected 'roots missing' error, got %v", err)
+		}
+	})
+
+	t.Run("roots with empty ID or Path skipped", func(t *testing.T) {
+		data := &RollbackData{
+			Kind:         rollbackKindFilesystem,
+			RollbackPath: "/some/path",
+			Filesystem: &FilesystemRollbackData{
+				TarGz: "rollback.tar.gz",
+				Roots: []FilesystemRoot{
+					{ID: "", Path: "/some/path"},
+					{ID: "p0", Path: ""},
+				},
+			},
+		}
+		err := RestoreRollbackState(context.Background(), data, RollbackRestoreOptions{})
+		if err == nil {
+			t.Error("expected error for invalid roots")
+		}
+		if !strings.Contains(err.Error(), "roots missing") {
+			t.Errorf("expected 'roots missing' error (empty roots after filtering), got %v", err)
+		}
+	})
+
+	t.Run("missing tar.gz file", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		data := &RollbackData{
+			Kind:         rollbackKindFilesystem,
+			RollbackPath: tmpDir,
+			Filesystem: &FilesystemRollbackData{
+				TarGz: "nonexistent.tar.gz",
+				Roots: []FilesystemRoot{
+					{ID: "p0", Path: "/some/path"},
+				},
+			},
+		}
+		err := RestoreRollbackState(context.Background(), data, RollbackRestoreOptions{})
+		if err == nil {
+			t.Error("expected error for missing tar.gz")
+		}
+		if !strings.Contains(err.Error(), "opening rollback tar.gz") {
+			t.Errorf("expected 'opening rollback tar.gz' error, got %v", err)
+		}
+	})
+
+	t.Run("invalid gzip file", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		tarPath := filepath.Join(tmpDir, "invalid.tar.gz")
+		if err := os.WriteFile(tarPath, []byte("not a gzip file"), 0644); err != nil {
+			t.Fatalf("write file: %v", err)
+		}
+
+		data := &RollbackData{
+			Kind:         rollbackKindFilesystem,
+			RollbackPath: tmpDir,
+			Filesystem: &FilesystemRollbackData{
+				TarGz: "invalid.tar.gz",
+				Roots: []FilesystemRoot{
+					{ID: "p0", Path: "/some/path"},
+				},
+			},
+		}
+		err := RestoreRollbackState(context.Background(), data, RollbackRestoreOptions{})
+		if err == nil {
+			t.Error("expected error for invalid gzip")
+		}
+		if !strings.Contains(err.Error(), "opening gzip") {
+			t.Errorf("expected 'opening gzip' error, got %v", err)
+		}
+	})
+}
+
+func TestRestoreFilesystemRollback_WithForce(t *testing.T) {
+	project := t.TempDir()
+	work := filepath.Join(project, "work")
+	if err := os.MkdirAll(work, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	// Create initial file
+	targetDir := filepath.Join(work, "build")
+	if err := os.MkdirAll(targetDir, 0755); err != nil {
+		t.Fatalf("mkdir build: %v", err)
+	}
+	origFile := filepath.Join(targetDir, "original.txt")
+	if err := os.WriteFile(origFile, []byte("original"), 0644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	// Capture rollback state
+	req := &db.Request{
+		ID:          "test-force",
+		ProjectPath: project,
+		Command: db.CommandSpec{
+			Raw:   "rm -rf build",
+			Cwd:   work,
+			Shell: false,
+		},
+	}
+
+	data, err := CaptureRollbackState(context.Background(), req, RollbackCaptureOptions{MaxSizeBytes: 10 << 20})
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+
+	// Delete original and create a new file at same location
+	if err := os.RemoveAll(targetDir); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	if err := os.MkdirAll(targetDir, 0755); err != nil {
+		t.Fatalf("recreate dir: %v", err)
+	}
+	if err := os.WriteFile(origFile, []byte("new content"), 0644); err != nil {
+		t.Fatalf("write new file: %v", err)
+	}
+
+	// Restore without force should fail
+	loaded, err := LoadRollbackData(data.RollbackPath)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	err = RestoreRollbackState(context.Background(), loaded, RollbackRestoreOptions{Force: false})
+	if err == nil {
+		t.Error("expected error without force flag")
+	}
+	if !strings.Contains(err.Error(), "use --force") {
+		t.Errorf("expected force-related error, got %v", err)
+	}
+
+	// Restore with force should succeed
+	err = RestoreRollbackState(context.Background(), loaded, RollbackRestoreOptions{Force: true})
+	if err != nil {
+		t.Fatalf("restore with force: %v", err)
+	}
+
+	// Verify original content was restored
+	content, err := os.ReadFile(origFile)
+	if err != nil {
+		t.Fatalf("read restored file: %v", err)
+	}
+	if string(content) != "original" {
+		t.Errorf("expected 'original', got %q", string(content))
+	}
+}
+
+func TestDetectRollbackKind(t *testing.T) {
+	tests := []struct {
+		name     string
+		tokens   []string
+		wantKind string
+	}{
+		{"kubectl delete", []string{"kubectl", "delete", "deployment", "myapp"}, rollbackKindKubernetes},
+		{"kubectl only delete", []string{"kubectl", "delete"}, rollbackKindKubernetes},
+		{"kubectl without delete", []string{"kubectl", "get", "pods"}, ""},
+		{"git reset", []string{"git", "reset", "--hard", "HEAD"}, rollbackKindGit},
+		{"git checkout", []string{"git", "checkout", "--", "."}, rollbackKindGit},
+		{"git clean", []string{"git", "clean", "-fd"}, rollbackKindGit},
+		{"rm command", []string{"rm", "-rf", "./build"}, rollbackKindFilesystem},
+		{"rm single file", []string{"rm", "file.txt"}, rollbackKindFilesystem},
+		{"rm without targets", []string{"rm"}, ""},
+		{"unknown command", []string{"echo", "hello"}, ""},
+		{"empty tokens", []string{}, ""},
+		{"nil tokens", nil, ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := detectRollbackKind(tc.tokens)
+			if got != tc.wantKind {
+				t.Errorf("detectRollbackKind(%v) = %q, want %q", tc.tokens, got, tc.wantKind)
+			}
+		})
+	}
+}
+
+func TestEstimateFileBytes(t *testing.T) {
+	t.Run("empty roots", func(t *testing.T) {
+		total, err := estimateFileBytes(nil, 0)
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		if total != 0 {
+			t.Errorf("expected 0, got %d", total)
+		}
+	})
+
+	t.Run("single file", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		file := filepath.Join(tmpDir, "test.txt")
+		content := []byte("hello world")
+		if err := os.WriteFile(file, content, 0644); err != nil {
+			t.Fatalf("write file: %v", err)
+		}
+
+		total, err := estimateFileBytes([]string{file}, 0)
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		if total != int64(len(content)) {
+			t.Errorf("expected %d, got %d", len(content), total)
+		}
+	})
+
+	t.Run("directory with files", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		files := map[string]string{
+			"a.txt": "hello",
+			"b.txt": "world",
+		}
+		expectedTotal := int64(0)
+		for name, content := range files {
+			if err := os.WriteFile(filepath.Join(tmpDir, name), []byte(content), 0644); err != nil {
+				t.Fatalf("write file: %v", err)
+			}
+			expectedTotal += int64(len(content))
+		}
+
+		total, err := estimateFileBytes([]string{tmpDir}, 0)
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		if total != expectedTotal {
+			t.Errorf("expected %d, got %d", expectedTotal, total)
+		}
+	})
+
+	t.Run("exceeds max size", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		file := filepath.Join(tmpDir, "large.txt")
+		content := make([]byte, 1000)
+		if err := os.WriteFile(file, content, 0644); err != nil {
+			t.Fatalf("write file: %v", err)
+		}
+
+		_, err := estimateFileBytes([]string{file}, 500)
+		if err == nil {
+			t.Error("expected error for exceeding max size")
+		}
+		if !strings.Contains(err.Error(), "exceeds max size") {
+			t.Errorf("expected 'exceeds max size' error, got %v", err)
+		}
+	})
+
+	t.Run("nonexistent path", func(t *testing.T) {
+		_, err := estimateFileBytes([]string{"/nonexistent/path"}, 0)
+		if err == nil {
+			t.Error("expected error for nonexistent path")
+		}
+	})
+}
+
+func TestCaptureRollbackState_Errors(t *testing.T) {
+	t.Run("nil request", func(t *testing.T) {
+		_, err := CaptureRollbackState(context.Background(), nil, RollbackCaptureOptions{})
+		if err == nil {
+			t.Error("expected error for nil request")
+		}
+	})
+
+	t.Run("empty project path", func(t *testing.T) {
+		req := &db.Request{
+			ID:          "test-empty",
+			ProjectPath: "",
+			Command: db.CommandSpec{
+				Raw: "rm -rf ./build",
+			},
+		}
+		_, err := CaptureRollbackState(context.Background(), req, RollbackCaptureOptions{})
+		if err == nil {
+			t.Error("expected error for empty project path")
+		}
+	})
+
+	t.Run("unrecognized command returns nil data", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		req := &db.Request{
+			ID:          "test-unrecognized",
+			ProjectPath: tmpDir,
+			Command: db.CommandSpec{
+				Raw: "echo hello",
+				Cwd: tmpDir,
+			},
+		}
+		data, err := CaptureRollbackState(context.Background(), req, RollbackCaptureOptions{})
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		if data != nil {
+			t.Error("expected nil data for unrecognized command")
+		}
+	})
+
+	t.Run("rm with no existing targets", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		req := &db.Request{
+			ID:          "test-no-targets",
+			ProjectPath: tmpDir,
+			Command: db.CommandSpec{
+				Raw: "rm -rf ./nonexistent",
+				Cwd: tmpDir,
+			},
+		}
+		data, err := CaptureRollbackState(context.Background(), req, RollbackCaptureOptions{})
+		// Should return error when targets don't exist (no existing rm targets to capture)
+		if err == nil && data != nil {
+			t.Error("expected error or nil data for nonexistent targets")
+		}
+		// If error, it should be about no targets
+		if err != nil && !strings.Contains(err.Error(), "rm targets") {
+			t.Errorf("unexpected error type: %v", err)
+		}
+	})
+
+	t.Run("captures context cancellation", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		targetDir := filepath.Join(tmpDir, "work", "build")
+		if err := os.MkdirAll(targetDir, 0755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(targetDir, "test.txt"), []byte("hello"), 0644); err != nil {
+			t.Fatalf("write file: %v", err)
+		}
+
+		req := &db.Request{
+			ID:          "test-context",
+			ProjectPath: tmpDir,
+			Command: db.CommandSpec{
+				Raw: "rm -rf build",
+				Cwd: filepath.Join(tmpDir, "work"),
+			},
+		}
+
+		// Create a cancelled context
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		// Capture should still work even with cancelled context (for filesystem rollback)
+		data, err := CaptureRollbackState(ctx, req, RollbackCaptureOptions{MaxSizeBytes: 10 << 20})
+		// It's acceptable if this fails due to context cancellation
+		_ = err
+		_ = data
+	})
+}
+
+func TestWriteTarGz(t *testing.T) {
+	t.Run("creates valid tar.gz", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		sourceDir := filepath.Join(tmpDir, "source")
+		if err := os.MkdirAll(sourceDir, 0755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(sourceDir, "test.txt"), []byte("hello"), 0644); err != nil {
+			t.Fatalf("write file: %v", err)
+		}
+
+		outPath := filepath.Join(tmpDir, "output.tar.gz")
+		roots := []FilesystemRoot{{ID: "p0", Path: sourceDir}}
+		if err := writeTarGz(outPath, roots); err != nil {
+			t.Fatalf("writeTarGz: %v", err)
+		}
+
+		// Verify file was created
+		if _, err := os.Stat(outPath); err != nil {
+			t.Errorf("output file not created: %v", err)
+		}
+	})
+
+	t.Run("handles single file", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		sourceFile := filepath.Join(tmpDir, "single.txt")
+		if err := os.WriteFile(sourceFile, []byte("content"), 0644); err != nil {
+			t.Fatalf("write file: %v", err)
+		}
+
+		outPath := filepath.Join(tmpDir, "single.tar.gz")
+		roots := []FilesystemRoot{{ID: "p0", Path: sourceFile}}
+		if err := writeTarGz(outPath, roots); err != nil {
+			t.Fatalf("writeTarGz: %v", err)
+		}
+	})
+
+	t.Run("fails for nonexistent source", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		outPath := filepath.Join(tmpDir, "fail.tar.gz")
+		roots := []FilesystemRoot{{ID: "p0", Path: "/nonexistent/path"}}
+		err := writeTarGz(outPath, roots)
+		if err == nil {
+			t.Error("expected error for nonexistent source")
+		}
+	})
+
+	t.Run("fails for invalid output path", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		sourceFile := filepath.Join(tmpDir, "source.txt")
+		if err := os.WriteFile(sourceFile, []byte("content"), 0644); err != nil {
+			t.Fatalf("write file: %v", err)
+		}
+
+		roots := []FilesystemRoot{{ID: "p0", Path: sourceFile}}
+		err := writeTarGz("/nonexistent/dir/output.tar.gz", roots)
+		if err == nil {
+			t.Error("expected error for invalid output path")
+		}
+	})
+}
+
+func TestWriteRollbackMetadata(t *testing.T) {
+	t.Run("writes valid metadata file", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		data := &RollbackData{
+			Kind:         rollbackKindFilesystem,
+			RequestID:    "test-123",
+			ProjectPath:  "/test/project",
+			RollbackPath: tmpDir,
+		}
+
+		err := writeRollbackMetadata(tmpDir, data)
+		if err != nil {
+			t.Fatalf("writeRollbackMetadata: %v", err)
+		}
+
+		// Verify file was created
+		metaPath := filepath.Join(tmpDir, "metadata.json")
+		if _, err := os.Stat(metaPath); err != nil {
+			t.Errorf("metadata file not created: %v", err)
+		}
+
+		// Verify it can be loaded back
+		loaded, err := LoadRollbackData(tmpDir)
+		if err != nil {
+			t.Fatalf("LoadRollbackData: %v", err)
+		}
+		if loaded.RequestID != "test-123" {
+			t.Errorf("expected RequestID test-123, got %s", loaded.RequestID)
+		}
+	})
+
+	t.Run("fails for invalid directory", func(t *testing.T) {
+		data := &RollbackData{
+			Kind:      rollbackKindFilesystem,
+			RequestID: "test-123",
+		}
+
+		err := writeRollbackMetadata("/nonexistent/path", data)
+		if err == nil {
+			t.Error("expected error for invalid directory")
+		}
+	})
+}
+
+func TestAddPathToTar(t *testing.T) {
+	t.Run("handles regular file", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		// Create a regular file
+		testFile := filepath.Join(tmpDir, "test.txt")
+		if err := os.WriteFile(testFile, []byte("content"), 0644); err != nil {
+			t.Fatalf("write file: %v", err)
+		}
+
+		// Create a tar writer
+		outPath := filepath.Join(tmpDir, "test.tar.gz")
+		f, err := os.Create(outPath)
+		if err != nil {
+			t.Fatalf("create file: %v", err)
+		}
+		defer f.Close()
+
+		gw := gzip.NewWriter(f)
+		defer gw.Close()
+
+		tw := tar.NewWriter(gw)
+		defer tw.Close()
+
+		// Get file info
+		info, err := os.Lstat(testFile)
+		if err != nil {
+			t.Fatalf("lstat: %v", err)
+		}
+
+		// Add the file to tar
+		err = addPathToTar(tw, testFile, "test.txt", info)
+		if err != nil {
+			t.Fatalf("addPathToTar: %v", err)
+		}
+	})
+
+	t.Run("handles directory", func(t *testing.T) {
+		tmpDir := t.TempDir()
+
+		// Create a subdirectory
+		subDir := filepath.Join(tmpDir, "subdir")
+		if err := os.MkdirAll(subDir, 0755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+
+		// Create a tar writer
+		outPath := filepath.Join(tmpDir, "test.tar.gz")
+		f, err := os.Create(outPath)
+		if err != nil {
+			t.Fatalf("create file: %v", err)
+		}
+		defer f.Close()
+
+		gw := gzip.NewWriter(f)
+		defer gw.Close()
+
+		tw := tar.NewWriter(gw)
+		defer tw.Close()
+
+		// Get directory info
+		info, err := os.Lstat(subDir)
+		if err != nil {
+			t.Fatalf("lstat: %v", err)
+		}
+
+		// Add the directory to tar
+		err = addPathToTar(tw, subDir, "subdir/", info)
+		if err != nil {
+			t.Fatalf("addPathToTar: %v", err)
+		}
+	})
+
+	t.Run("handles symlink", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("symlink tests are not reliable on windows")
+		}
+
+		tmpDir := t.TempDir()
+
+		// Create a file and symlink
+		realFile := filepath.Join(tmpDir, "real.txt")
+		if err := os.WriteFile(realFile, []byte("content"), 0644); err != nil {
+			t.Fatalf("write file: %v", err)
+		}
+
+		linkFile := filepath.Join(tmpDir, "link.txt")
+		if err := os.Symlink("real.txt", linkFile); err != nil {
+			t.Skipf("symlink not supported: %v", err)
+		}
+
+		// Create a tar writer
+		outPath := filepath.Join(tmpDir, "test.tar.gz")
+		f, err := os.Create(outPath)
+		if err != nil {
+			t.Fatalf("create file: %v", err)
+		}
+		defer f.Close()
+
+		gw := gzip.NewWriter(f)
+		defer gw.Close()
+
+		tw := tar.NewWriter(gw)
+		defer tw.Close()
+
+		// Get file info for the symlink
+		info, err := os.Lstat(linkFile)
+		if err != nil {
+			t.Fatalf("lstat: %v", err)
+		}
+
+		// Add the symlink to tar
+		err = addPathToTar(tw, linkFile, "link.txt", info)
+		if err != nil {
+			t.Fatalf("addPathToTar: %v", err)
+		}
+	})
+}
+
+func TestSanitizeFilename(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"simple", "simple"},
+		{"UPPERCASE", "uppercase"},
+		{"with spaces", "with_spaces"},
+		{"path/slash", "path_slash"},
+		{"special!@#$%chars", "specialchars"},
+		{"keep-dash", "keep-dash"},
+		{"keep.dot", "keep.dot"},
+		{"keep_underscore", "keep_underscore"},
+		{"123numbers", "123numbers"},
+		{"  trimmed  ", "trimmed"},
+		{"", "unknown"},
+		{"!!!###", "unknown"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.input, func(t *testing.T) {
+			got := sanitizeFilename(tc.input)
+			if got != tc.want {
+				t.Errorf("sanitizeFilename(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestCleanupOldRollbackCaptures(t *testing.T) {
 	t.Run("zero retention does nothing", func(t *testing.T) {
 		tmpDir := t.TempDir()

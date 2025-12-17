@@ -507,6 +507,53 @@ func TestExecutorCanExecute(t *testing.T) {
 			t.Errorf("expected reason to mention already executed, got %q", reason)
 		}
 	})
+
+	t.Run("command hash mismatch returns false", func(t *testing.T) {
+		dbConn, err := db.Open(":memory:")
+		if err != nil {
+			t.Fatalf("db.Open(:memory:) error = %v", err)
+		}
+		defer dbConn.Close()
+
+		session := &db.Session{
+			ID:          "test-session",
+			ProjectPath: "/tmp/test",
+			AgentName:   "test-agent",
+			Program:     "test-program",
+			Model:       "test-model",
+		}
+		if err := dbConn.CreateSession(session); err != nil {
+			t.Fatalf("CreateSession error = %v", err)
+		}
+
+		futureTime := time.Now().Add(1 * time.Hour)
+		req := &db.Request{
+			ProjectPath:        "/tmp/test",
+			RequestorSessionID: "test-session",
+			RequestorAgent:     "test-agent",
+			RequestorModel:     "test-model",
+			RiskTier:           db.RiskTierCaution,
+			Command: db.CommandSpec{
+				Raw:  "ls -la",
+				Cwd:  "/tmp",
+				Hash: "invalid-hash",
+			},
+			Status:            db.StatusApproved,
+			ApprovalExpiresAt: &futureTime,
+		}
+		if err := dbConn.CreateRequest(req); err != nil {
+			t.Fatalf("CreateRequest error = %v", err)
+		}
+
+		exec := NewExecutor(dbConn, nil)
+		canExec, reason := exec.CanExecute(req.ID)
+		if canExec {
+			t.Error("expected CanExecute to return false for hash mismatch")
+		}
+		if !strings.Contains(reason, "hash mismatch") {
+			t.Errorf("expected reason to mention hash mismatch, got %q", reason)
+		}
+	})
 }
 
 func TestExecuteApprovedRequest(t *testing.T) {
@@ -1489,6 +1536,54 @@ func TestExecuteApprovedRequest(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), "creating log file") && !strings.Contains(err.Error(), "creating log dir") {
 			t.Errorf("expected log file/dir error, got %v", err)
+		}
+	})
+
+	t.Run("policy escalation returns false", func(t *testing.T) {
+		dbConn, err := db.Open(":memory:")
+		if err != nil {
+			t.Fatalf("db.Open(:memory:) error = %v", err)
+		}
+		defer dbConn.Close()
+
+		session := &db.Session{
+			ID:          "test-session",
+			ProjectPath: "/tmp/test",
+			AgentName:   "test-agent",
+			Program:     "test-program",
+			Model:       "test-model",
+		}
+		if err := dbConn.CreateSession(session); err != nil {
+			t.Fatalf("CreateSession error = %v", err)
+		}
+
+		// Create a request that was approved at caution tier
+		cmdSpec := db.CommandSpec{
+			Raw: "rm -rf /very/important/path", // This is dangerous, not caution
+			Cwd: "/",
+		}
+		cmdSpec.Hash = ComputeCommandHash(cmdSpec)
+
+		req := &db.Request{
+			ProjectPath:        "/tmp/test",
+			RequestorSessionID: "test-session",
+			RequestorAgent:     "test-agent",
+			RequestorModel:     "test-model",
+			RiskTier:           db.RiskTierCaution, // Approved at lower tier
+			Command:            cmdSpec,
+			Status:             db.StatusApproved,
+		}
+		if err := dbConn.CreateRequest(req); err != nil {
+			t.Fatalf("CreateRequest error = %v", err)
+		}
+
+		exec := NewExecutor(dbConn, nil)
+		canExec, reason := exec.CanExecute(req.ID)
+		if canExec {
+			t.Error("expected canExec=false when policy escalation occurs")
+		}
+		if !strings.Contains(reason, "escalation") && !strings.Contains(reason, "classified as") {
+			t.Errorf("expected policy escalation message, got %q", reason)
 		}
 	})
 }

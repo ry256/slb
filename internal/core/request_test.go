@@ -292,6 +292,46 @@ func TestDynamicQuorum_BelowFloor(t *testing.T) {
 	}
 }
 
+func TestCreateRequest_SessionInactive(t *testing.T) {
+	database := testutil.NewTestDB(t)
+	session := testutil.MakeSession(t, database, testutil.SessionWithAgentName("agent1"))
+
+	// End the session
+	if err := database.EndSession(session.ID); err != nil {
+		t.Fatalf("EndSession: %v", err)
+	}
+
+	creator := NewRequestCreator(database, nil, nil, nil)
+
+	_, err := creator.CreateRequest(CreateRequestOptions{
+		SessionID: session.ID,
+		Command:   "rm -rf /tmp/test",
+	})
+
+	if err != ErrSessionInactive {
+		t.Errorf("expected ErrSessionInactive, got: %v", err)
+	}
+}
+
+func TestCreateRequest_UnmatchedCommand(t *testing.T) {
+	database := testutil.NewTestDB(t)
+	session := testutil.MakeSession(t, database, testutil.SessionWithAgentName("agent1"))
+	creator := NewRequestCreator(database, nil, nil, nil)
+
+	// Command that doesn't match any patterns
+	result, err := creator.CreateRequest(CreateRequestOptions{
+		SessionID: session.ID,
+		Command:   "echo hello world",
+	})
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Skipped {
+		t.Error("expected unmatched command to be skipped")
+	}
+}
+
 func containsSubstring(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(s) > 0 && (s[:len(substr)] == substr || containsSubstring(s[1:], substr)))
 }

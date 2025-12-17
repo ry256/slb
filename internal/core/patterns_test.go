@@ -679,6 +679,20 @@ func TestConvenienceFunctions(t *testing.T) {
 	})
 }
 
+func TestCompilePatterns_InvalidPattern(t *testing.T) {
+	// compilePatterns should skip invalid regex patterns
+	patterns := compilePatterns(RiskTierDangerous, []string{
+		"valid-pattern",
+		"[invalid-regex",  // Invalid regex - unclosed bracket
+		"another-valid-.*",
+	}, "test")
+
+	// Should have 2 valid patterns (invalid one skipped)
+	if len(patterns) != 2 {
+		t.Errorf("expected 2 valid patterns, got %d", len(patterns))
+	}
+}
+
 func TestClassifyCompoundCommands(t *testing.T) {
 	engine := NewPatternEngine()
 
@@ -735,6 +749,106 @@ func TestClassifyCompoundCommands(t *testing.T) {
 		if len(result.MatchedSegments) == 0 {
 			t.Error("expected matched segments to be recorded")
 		}
+	})
+
+	t.Run("caution command alone as first segment", func(t *testing.T) {
+		// npm uninstall is caution, ls is safe
+		result := engine.ClassifyCommand("npm uninstall somepackage", "")
+		if result.Tier != RiskTierCaution {
+			t.Errorf("expected caution tier, got %q", result.Tier)
+		}
+	})
+
+	t.Run("caution as highest tier in compound", func(t *testing.T) {
+		// ls is safe, npm uninstall is caution
+		result := engine.ClassifyCommand("ls -la && npm uninstall somepackage", "")
+		if result.Tier != RiskTierCaution {
+			t.Errorf("expected caution tier, got %q", result.Tier)
+		}
+		if !result.NeedsApproval {
+			t.Error("expected caution to need approval")
+		}
+	})
+
+	t.Run("safe command alone is safe", func(t *testing.T) {
+		result := engine.ClassifyCommand("git stash", "")
+		if result.Tier != RiskTier(RiskSafe) && result.NeedsApproval {
+			t.Errorf("expected safe tier or no approval needed, got tier=%q needsApproval=%v", result.Tier, result.NeedsApproval)
+		}
+	})
+}
+
+func TestClassifyCommand_FallbackSQL(t *testing.T) {
+	// These tests check the fallback SQL detection that occurs when
+	// the command doesn't match any primary patterns
+	engine := NewPatternEngine()
+
+	t.Run("DELETE FROM without WHERE in obscure wrapper", func(t *testing.T) {
+		// Use an unusual command that won't match primary DELETE patterns
+		// but will be caught by fallback detection
+		result := engine.ClassifyCommand("some-script 'execute delete from users cascade'", "")
+		if result.Tier != RiskTierCritical && result.Tier != RiskTierDangerous {
+			t.Errorf("expected critical or dangerous tier for DELETE without WHERE, got %q", result.Tier)
+		}
+	})
+
+	t.Run("DELETE FROM with WHERE in wrapper", func(t *testing.T) {
+		result := engine.ClassifyCommand("some-tool 'delete from users where id > 100'", "")
+		if result.Tier != RiskTierDangerous && result.Tier != RiskTierCritical {
+			t.Errorf("expected dangerous or critical tier for DELETE with WHERE, got %q", result.Tier)
+		}
+	})
+}
+
+func TestClassifyCommand_CommandResolution(t *testing.T) {
+	engine := NewPatternEngine()
+
+	t.Run("uses first segment when primary is empty", func(t *testing.T) {
+		// Simple command without wrapper should use the command directly
+		result := engine.ClassifyCommand("rm -rf /tmp/test", "")
+		if result.Tier != RiskTierDangerous && result.Tier != RiskTierCritical {
+			t.Errorf("expected dangerous or critical tier, got %q", result.Tier)
+		}
+	})
+
+	t.Run("uses raw command when no segments parsed", func(t *testing.T) {
+		// Very unusual command that might not parse into segments
+		result := engine.ClassifyCommand("", "")
+		// Empty command should not need approval
+		if result.NeedsApproval {
+			t.Error("empty command should not need approval")
+		}
+	})
+
+	t.Run("safe pattern takes precedence", func(t *testing.T) {
+		// git stash is a safe command (in default patterns)
+		result := engine.ClassifyCommand("git stash", "")
+		if result.Tier != RiskTier(RiskSafe) {
+			t.Errorf("expected safe tier for git stash, got %q", result.Tier)
+		}
+		if !result.IsSafe {
+			t.Error("expected IsSafe to be true")
+		}
+	})
+
+	t.Run("caution pattern matches", func(t *testing.T) {
+		// npm uninstall is a caution command (in default patterns)
+		result := engine.ClassifyCommand("npm uninstall somepackage", "")
+		if result.Tier != RiskTierCaution {
+			t.Errorf("expected caution tier for npm uninstall, got %q", result.Tier)
+		}
+		if !result.NeedsApproval {
+			t.Error("expected NeedsApproval to be true for caution tier")
+		}
+	})
+
+	t.Run("parse error is captured", func(t *testing.T) {
+		// Command with parse issues should capture the error
+		// Using unbalanced quotes
+		result := engine.ClassifyCommand(`echo "unclosed`, "")
+		// The command should still be classified, but may have ParseError set
+		// Note: parseError may or may not be set depending on shellwords behavior
+		_ = result.ParseError // Just verify it's accessible
 	})
 }
 

@@ -1486,3 +1486,35 @@ func TestCanReview_AdditionalCases(t *testing.T) {
 		}
 	})
 }
+
+func TestEscalateDifferentModelTimeout_Errors(t *testing.T) {
+	t.Run("request not found returns error", func(t *testing.T) {
+		dbConn, err := db.Open(":memory:")
+		if err != nil {
+			t.Fatalf("db.Open(:memory:) error = %v", err)
+		}
+		defer dbConn.Close()
+
+		rs := NewReviewService(dbConn, DefaultReviewConfig())
+		err = rs.EscalateDifferentModelTimeout("nonexistent-request")
+		if err == nil {
+			t.Error("expected error for nonexistent request")
+		}
+	})
+}
+
+func TestGetReviewStatus_Errors(t *testing.T) {
+	t.Run("request not found returns error", func(t *testing.T) {
+		dbConn, err := db.Open(":memory:")
+		if err != nil {
+			t.Fatalf("db.Open(:memory:) error = %v", err)
+		}
+		defer dbConn.Close()
+
+		rs := NewReviewService(dbConn, DefaultReviewConfig())
+		_, err = rs.GetReviewStatus("nonexistent-request")
+		if err == nil {
+			t.Error("expected error for nonexistent request")
+		}
+	})
+}

@@ -520,3 +520,82 @@ func TestRunContextCommand_ContextCancellation(t *testing.T) {
 	}
 }
 
+func TestCappedBuffer_Write(t *testing.T) {
+	t.Run("nil buffer accepts all writes", func(t *testing.T) {
+		var buf *cappedBuffer = nil
+		n, err := buf.Write([]byte("hello"))
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		if n != 5 {
+			t.Errorf("expected n=5, got %d", n)
+		}
+	})
+
+	t.Run("no max writes everything", func(t *testing.T) {
+		buf := &cappedBuffer{max: 0}
+		n, err := buf.Write([]byte("hello"))
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		if n != 5 {
+			t.Errorf("expected n=5, got %d", n)
+		}
+		if buf.buf.String() != "hello" {
+			t.Errorf("expected buffer 'hello', got %q", buf.buf.String())
+		}
+		if buf.truncated {
+			t.Error("expected truncated=false")
+		}
+	})
+
+	t.Run("respects max limit", func(t *testing.T) {
+		buf := &cappedBuffer{max: 10}
+		n, err := buf.Write([]byte("hello"))
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		if n != 5 {
+			t.Errorf("expected n=5, got %d", n)
+		}
+		if buf.truncated {
+			t.Error("expected truncated=false after first write")
+		}
+
+		// Write more data to exceed max
+		n, err = buf.Write([]byte("world!"))
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		if n != 6 {
+			t.Errorf("expected n=6, got %d", n)
+		}
+		if !buf.truncated {
+			t.Error("expected truncated=true after exceeding max")
+		}
+		// Buffer should only contain 10 bytes
+		if buf.buf.Len() != 10 {
+			t.Errorf("expected buffer length 10, got %d", buf.buf.Len())
+		}
+	})
+
+	t.Run("already at max drops writes", func(t *testing.T) {
+		buf := &cappedBuffer{max: 5}
+		buf.Write([]byte("hello"))
+		// Now at max
+		n, err := buf.Write([]byte("more"))
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		if n != 4 {
+			t.Errorf("expected n=4, got %d", n)
+		}
+		if !buf.truncated {
+			t.Error("expected truncated=true")
+		}
+		if buf.buf.Len() != 5 {
+			t.Errorf("expected buffer length 5, got %d", buf.buf.Len())
+		}
+	})
+}
+
