@@ -43,6 +43,15 @@ var wrapperPrefixes = []string{
 	"ltrace",
 }
 
+// Shell commands that execute other commands with -c flag
+var shellExecutors = []string{"bash", "sh", "zsh", "ksh", "dash"}
+
+// Pattern to extract command from shell -c 'command'
+var shellCPattern = regexp.MustCompile(`^(bash|sh|zsh|ksh|dash)\s+-c\s+['"](.+)['"]$`)
+
+// Pattern to detect xargs with a command
+var xargsPattern = regexp.MustCompile(`xargs\s+(.+)$`)
+
 // Compound command separators
 var compoundSeparators = regexp.MustCompile(`\s*(?:;|&&|\|\||&)\s*`)
 
@@ -128,6 +137,15 @@ func NormalizeCommand(cmd string) *NormalizedCommand {
 
 // normalizeSegment strips wrappers using a shell-aware tokenizer.
 func normalizeSegment(seg string) (string, []string, bool) {
+	// First check for shell -c 'command' pattern and extract inner command
+	if match := shellCPattern.FindStringSubmatch(seg); match != nil {
+		innerCmd := match[2]
+		// Recursively normalize the inner command
+		inner, wrappers, parseErr := normalizeSegment(innerCmd)
+		wrappers = append([]string{match[1] + " -c"}, wrappers...)
+		return inner, wrappers, parseErr
+	}
+
 	parser := shellwords.NewParser()
 	tokens, err := parser.Parse(seg)
 	parseErr := err != nil
@@ -166,6 +184,15 @@ func normalizeSegment(seg string) (string, []string, bool) {
 
 	normalized := strings.TrimSpace(strings.Join(tokens[i:], " "))
 	return normalized, stripped, parseErr
+}
+
+// ExtractXargsCommand extracts the command from an xargs invocation.
+// Returns the command that xargs will execute, or empty string if not xargs.
+func ExtractXargsCommand(seg string) string {
+	if match := xargsPattern.FindStringSubmatch(seg); match != nil {
+		return strings.TrimSpace(match[1])
+	}
+	return ""
 }
 
 func isWrapper(tok string) bool {

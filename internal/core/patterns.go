@@ -134,6 +134,7 @@ func (e *PatternEngine) LoadDefaultPatterns() {
 	// Caution patterns (auto-approve after delay)
 	e.caution = compilePatterns(RiskTierCaution, []string{
 		`^rm\s+[^-]`,
+		`^rm$`, // bare rm (used in xargs pipelines like: find | xargs rm)
 		`^git\s+stash\s+drop`,
 		`^git\s+branch\s+-[dD]`,
 		`^npm\s+uninstall`,
@@ -268,6 +269,12 @@ func (e *PatternEngine) classifyCompoundCommand(normalized *NormalizedCommand, c
 		// Resolve paths for this segment
 		if cwd != "" {
 			segment = ResolvePathsInCommand(segment, cwd)
+		}
+
+		// Check for xargs with a command - extract and classify the inner command
+		if xargsCmd := ExtractXargsCommand(segment); xargsCmd != "" {
+			// Classify the command that xargs will execute
+			segment = xargsCmd
 		}
 
 		segmentMatch := SegmentMatch{Segment: segment}
