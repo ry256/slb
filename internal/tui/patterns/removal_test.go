@@ -1036,6 +1036,30 @@ func TestRenderFilterBarErrorMessage(t *testing.T) {
 	}
 }
 
+// TestRenderFilterBarSuggestType tests renderFilterBar with suggest filter type
+func TestRenderFilterBarSuggestType(t *testing.T) {
+	m := New("")
+	m.width = 80
+	m.filterType = db.PatternChangeTypeSuggest
+
+	bar := m.renderFilterBar()
+	if !strings.Contains(bar, "suggest") {
+		t.Error("filter bar should show 'suggest' filter type")
+	}
+}
+
+// TestRenderFilterBarAddType tests renderFilterBar with add filter type
+func TestRenderFilterBarAddType(t *testing.T) {
+	m := New("")
+	m.width = 80
+	m.filterType = db.PatternChangeTypeAdd
+
+	bar := m.renderFilterBar()
+	if !strings.Contains(bar, "add") {
+		t.Error("filter bar should show 'add' filter type")
+	}
+}
+
 // Test harness for database tests
 type testHarness struct {
 	projectPath string
