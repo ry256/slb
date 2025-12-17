@@ -441,7 +441,7 @@ func TestMyFunc_RetryLogic(t *testing.T) {
 
 ## Coverage Summary
 
-**Current Coverage: 74.4%** (up from 57.7%)
+**Current Coverage: 61.9%** (as of Dec 2025)
 
 ### Coverage by Category
 
