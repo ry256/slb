@@ -382,6 +382,23 @@ func (m *Model) moveSelection(delta int) {
 	}
 }
 
+// SelectedRequestID returns the ID of the currently selected pending request.
+// Returns empty string if no request is selected or if the pending requests panel is not focused.
+func (m *Model) SelectedRequestID() string {
+	if m.focus != focusPending {
+		return ""
+	}
+	if m.pendingSel < 0 || m.pendingSel >= len(m.pending) {
+		return ""
+	}
+	return m.pending[m.pendingSel].ID
+}
+
+// IsPendingFocused returns true if the pending requests panel is focused.
+func (m *Model) IsPendingFocused() bool {
+	return m.focus == focusPending
+}
+
 func tickCmd() tea.Cmd {
 	return tea.Tick(refreshInterval, func(time.Time) tea.Msg { return refreshMsg{} })
 }

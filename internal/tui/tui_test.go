@@ -8,8 +8,27 @@ import (
 
 func TestNew(t *testing.T) {
 	m := New()
-	if m.inner == nil {
-		t.Error("inner model should not be nil")
+	if m.dashboard == nil {
+		t.Error("dashboard model should not be nil")
+	}
+	if m.view != ViewDashboard {
+		t.Error("initial view should be ViewDashboard")
+	}
+}
+
+func TestNewWithOptions(t *testing.T) {
+	opts := Options{
+		ProjectPath:     "/tmp/test",
+		Theme:           "latte",
+		DisableMouse:    true,
+		RefreshInterval: 10,
+	}
+	m := NewWithOptions(opts)
+	if m.options.ProjectPath != "/tmp/test" {
+		t.Errorf("expected project path /tmp/test, got %s", m.options.ProjectPath)
+	}
+	if m.options.DisableMouse != true {
+		t.Error("expected DisableMouse to be true")
 	}
 }
 
@@ -20,14 +39,6 @@ func TestModelInit(t *testing.T) {
 	_ = cmd
 }
 
-func TestModelInitNilInner(t *testing.T) {
-	m := Model{inner: nil}
-	cmd := m.Init()
-	if cmd != nil {
-		t.Error("Init with nil inner should return nil cmd")
-	}
-}
-
 func TestModelUpdate(t *testing.T) {
 	m := New()
 	updated, cmd := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
@@ -35,21 +46,19 @@ func TestModelUpdate(t *testing.T) {
 		t.Error("Update should return non-nil model")
 	}
 	_ = cmd
-}
 
-func TestModelUpdateNilInner(t *testing.T) {
-	m := Model{inner: nil}
-	updated, cmd := m.Update(tea.KeyMsg{})
-	if cmd != nil {
-		t.Error("Update with nil inner should return nil cmd")
+	// Verify size was stored
+	um := updated.(Model)
+	if um.width != 80 || um.height != 24 {
+		t.Errorf("expected dimensions 80x24, got %dx%d", um.width, um.height)
 	}
-	_ = updated
 }
 
 func TestModelView(t *testing.T) {
 	m := New()
 	// Set window size first
-	m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
 
 	view := m.View()
 	if view == "" {
@@ -57,11 +66,66 @@ func TestModelView(t *testing.T) {
 	}
 }
 
-func TestModelViewNilInner(t *testing.T) {
-	m := Model{inner: nil}
-	view := m.View()
-	if view != "Loading..." {
-		t.Errorf("View with nil inner should return 'Loading...', got %q", view)
+func TestNavigateToPatterns(t *testing.T) {
+	m := New()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+
+	// Simulate 'm' key press to navigate to patterns
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
+	um := updated.(Model)
+	if um.view != ViewPatterns {
+		t.Errorf("expected view to be ViewPatterns, got %d", um.view)
+	}
+}
+
+func TestNavigateToHistory(t *testing.T) {
+	m := New()
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+
+	// Simulate 'H' key press to navigate to history
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'H'}})
+	um := updated.(Model)
+	if um.view != ViewHistory {
+		t.Errorf("expected view to be ViewHistory, got %d", um.view)
+	}
+}
+
+func TestNavigateBackFromPatterns(t *testing.T) {
+	m := New()
+	m.view = ViewPatterns
+
+	// Simulate 'esc' key press to navigate back
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	um := updated.(Model)
+	if um.view != ViewDashboard {
+		t.Errorf("expected view to be ViewDashboard, got %d", um.view)
+	}
+}
+
+func TestNavigateBackFromHistory(t *testing.T) {
+	m := New()
+	m.view = ViewHistory
+
+	// Simulate 'b' key press to navigate back
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}})
+	um := updated.(Model)
+	if um.view != ViewDashboard {
+		t.Errorf("expected view to be ViewDashboard, got %d", um.view)
+	}
+}
+
+func TestDefaultOptions(t *testing.T) {
+	opts := DefaultOptions()
+	if opts.RefreshInterval != 5 {
+		t.Errorf("expected default refresh interval 5, got %d", opts.RefreshInterval)
+	}
+	if opts.DisableMouse != false {
+		t.Error("expected default DisableMouse to be false")
+	}
+	if opts.Theme != "" {
+		t.Errorf("expected default theme to be empty, got %s", opts.Theme)
 	}
 }
 
