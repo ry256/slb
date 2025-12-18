@@ -2,6 +2,7 @@
 package core
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"time"
@@ -180,7 +181,6 @@ func (rs *ReviewService) SubmitReview(opts ReviewOptions) (*ReviewResult, error)
 	timestamp := time.Now().UTC()
 	signature := db.ComputeReviewSignature(opts.SessionKey, opts.RequestID, opts.Decision, timestamp)
 
-	// Step 7: Create review
 	review := &db.Review{
 		RequestID:          opts.RequestID,
 		ReviewerSessionID:  opts.SessionID,
@@ -193,30 +193,55 @@ func (rs *ReviewService) SubmitReview(opts ReviewOptions) (*ReviewResult, error)
 		Comments:           opts.Comments,
 	}
 
-	if err := rs.db.CreateReview(review); err != nil {
-		return nil, fmt.Errorf("creating review: %w", err)
-	}
-
-	// Step 8: Check if decision changes request state
 	result := &ReviewResult{
 		Review: review,
 	}
 
-	approvals, rejections, err := rs.db.CountReviewsByDecision(opts.RequestID)
-	if err != nil {
-		return nil, fmt.Errorf("counting reviews: %w", err)
-	}
-	result.Approvals = approvals
-	result.Rejections = rejections
-
-	// Apply conflict resolution rules
-	newStatus := rs.determineNewStatus(request, opts.Decision, approvals, rejections)
-	if newStatus != "" && newStatus != request.Status {
-		if err := rs.db.UpdateRequestStatus(opts.RequestID, newStatus); err != nil {
-			return nil, fmt.Errorf("updating request status: %w", err)
+	// Execute review creation and status update in a transaction
+	err = rs.db.Transaction(func(tx *sql.Tx) error {
+		// Re-fetch request inside transaction to lock (if using serialized) or at least get fresh state
+		// Note: SQLite doesn't strictly lock on read unless BEGIN IMMEDIATE, but this helps.
+		// However, CreateReviewTx (insert) will lock the DB for writing.
+		
+		// Check duplicate again inside transaction
+		if exists, err := rs.db.HasReviewerAlreadyReviewedTx(tx, opts.RequestID, opts.SessionID); err != nil {
+			return err
+		} else if exists {
+			return ErrAlreadyReviewed
 		}
-		result.RequestStatusChanged = true
-		result.NewRequestStatus = newStatus
+
+		if err := rs.db.CreateReviewTx(tx, review); err != nil {
+			return fmt.Errorf("creating review: %w", err)
+		}
+
+		approvals, rejections, err := rs.db.CountReviewsByDecisionTx(tx, opts.RequestID)
+		if err != nil {
+			return fmt.Errorf("counting reviews: %w", err)
+		}
+		result.Approvals = approvals
+		result.Rejections = rejections
+
+		// Get latest status for transition check
+		reqTx, err := rs.db.GetRequestTx(tx, opts.RequestID)
+		if err != nil {
+			return fmt.Errorf("getting request: %w", err)
+		}
+
+		// Apply conflict resolution rules
+		newStatus := rs.determineNewStatus(reqTx, opts.Decision, approvals, rejections)
+		if newStatus != "" && newStatus != reqTx.Status {
+			// Pass current status for optimistic locking check
+			if err := rs.db.UpdateRequestStatusTx(tx, opts.RequestID, newStatus, reqTx.Status); err != nil {
+				return fmt.Errorf("updating request status: %w", err)
+			}
+			result.RequestStatusChanged = true
+			result.NewRequestStatus = newStatus
+		}
+		return nil
+	})
+
+	if err != nil {
+		return nil, err
 	}
 
 	// Notify asynchronously (best effort)

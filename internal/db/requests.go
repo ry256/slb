@@ -80,6 +80,26 @@ func (db *DB) CreateRequest(r *Request) error {
 	return nil
 }
 
+// GetRequestTx retrieves a request by ID within a transaction.
+func (db *DB) GetRequestTx(tx *sql.Tx, id string) (*Request, error) {
+	row := tx.QueryRow(`
+		SELECT id, project_path,
+			command_raw, command_argv_json, command_cwd, command_shell, command_hash,
+			command_display_redacted, command_contains_sensitive,
+			risk_tier, requestor_session_id, requestor_agent, requestor_model,
+			justification_reason, justification_expected_effect, justification_goal, justification_safety_argument,
+			dry_run_command, dry_run_output, attachments_json,
+			status, min_approvals, require_different_model,
+			execution_log_path, execution_exit_code, execution_duration_ms,
+			execution_executed_at, execution_executed_by_session_id, execution_executed_by_agent, execution_executed_by_model,
+			rollback_path, rollback_rolled_back_at,
+			created_at, resolved_at, expires_at, approval_expires_at
+		FROM requests WHERE id = ?
+	`, id)
+
+	return scanRequest(row)
+}
+
 // GetRequest retrieves a request by ID.
 func (db *DB) GetRequest(id string) (*Request, error) {
 	row := db.QueryRow(`
@@ -243,6 +263,39 @@ func (db *DB) ListAllRequests(projectPath string) ([]*Request, error) {
 	defer rows.Close()
 
 	return scanRequests(rows)
+}
+
+// UpdateRequestStatusTx updates a request's status within a transaction.
+func (db *DB) UpdateRequestStatusTx(tx *sql.Tx, id string, status RequestStatus, currentStatus RequestStatus) error {
+	// Validate transition using state machine
+	if !canTransition(currentStatus, status) {
+		return fmt.Errorf("%w: from %s to %s", ErrInvalidTransition, currentStatus, status)
+	}
+
+	// Build update query
+	now := time.Now().UTC().Format(time.RFC3339)
+	var resolvedAt sql.NullString
+	if status.IsTerminal() {
+		resolvedAt = sql.NullString{String: now, Valid: true}
+	}
+
+	// Optimistic locking: ensure status hasn't changed since we read it
+	result, err := tx.Exec(`
+		UPDATE requests SET status = ?, resolved_at = ? WHERE id = ? AND status = ?
+	`, string(status), resolvedAt, id, string(currentStatus))
+	if err != nil {
+		return fmt.Errorf("updating request status: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("getting rows affected: %w", err)
+	}
+	if rowsAffected == 0 {
+		return fmt.Errorf("%w: concurrent update detected or request not found", ErrInvalidTransition)
+	}
+
+	return nil
 }
 
 // UpdateRequestStatus updates a request's status using the state machine.

@@ -22,6 +22,41 @@ var ErrSelfReview = errors.New("cannot review your own request")
 // ErrInvalidSignature indicates the review signature is invalid.
 var ErrInvalidSignature = errors.New("invalid review signature")
 
+// CreateReviewTx inserts a review within a transaction.
+func (db *DB) CreateReviewTx(tx *sql.Tx, r *Review) error {
+	if r.ID == "" {
+		r.ID = uuid.New().String()
+	}
+	now := time.Now().UTC()
+	if r.CreatedAt.IsZero() {
+		r.CreatedAt = now
+	}
+	if r.SignatureTimestamp.IsZero() {
+		r.SignatureTimestamp = now
+	}
+
+	respJSON, _ := json.Marshal(r.Responses)
+
+	_, err := tx.Exec(`
+		INSERT INTO reviews (
+			id, request_id, reviewer_session_id, reviewer_agent, reviewer_model,
+			decision, signature, signature_timestamp,
+			responses_json, comments, created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`,
+		r.ID, r.RequestID, r.ReviewerSessionID, r.ReviewerAgent, r.ReviewerModel,
+		string(r.Decision), r.Signature, r.SignatureTimestamp.Format(time.RFC3339),
+		nullString(string(respJSON)), nullString(r.Comments), r.CreatedAt.Format(time.RFC3339),
+	)
+	if err != nil {
+		if isUniqueConstraintError(err) {
+			return ErrReviewExists
+		}
+		return fmt.Errorf("creating review: %w", err)
+	}
+	return nil
+}
+
 // CreateReview inserts a review, generating ID and timestamps if missing.
 func (db *DB) CreateReview(r *Review) error {
 	if r.ID == "" {
@@ -89,6 +124,21 @@ func (db *DB) ListReviewsForRequest(requestID string) ([]*Review, error) {
 	return scanReviewList(rows)
 }
 
+// CountReviewsByDecisionTx returns counts of approvals and rejections for a request within a transaction.
+func (db *DB) CountReviewsByDecisionTx(tx *sql.Tx, requestID string) (int, int, error) {
+	var approvals, rejections sql.NullInt64
+	err := tx.QueryRow(`
+		SELECT
+		  SUM(CASE WHEN decision = 'approve' THEN 1 ELSE 0 END),
+		  SUM(CASE WHEN decision = 'reject' THEN 1 ELSE 0 END)
+		FROM reviews WHERE request_id = ?
+	`, requestID).Scan(&approvals, &rejections)
+	if err != nil {
+		return 0, 0, fmt.Errorf("counting reviews: %w", err)
+	}
+	return int(approvals.Int64), int(rejections.Int64), nil
+}
+
 // CountReviewsByDecision returns counts of approvals and rejections for a request.
 func (db *DB) CountReviewsByDecision(requestID string) (int, int, error) {
 	var approvals, rejections sql.NullInt64
@@ -102,6 +152,18 @@ func (db *DB) CountReviewsByDecision(requestID string) (int, int, error) {
 		return 0, 0, fmt.Errorf("counting reviews: %w", err)
 	}
 	return int(approvals.Int64), int(rejections.Int64), nil
+}
+
+// HasReviewerAlreadyReviewedTx checks if the reviewer has already reviewed the request within a transaction.
+func (db *DB) HasReviewerAlreadyReviewedTx(tx *sql.Tx, requestID, sessionID string) (bool, error) {
+	var count int
+	err := tx.QueryRow(`
+		SELECT COUNT(*) FROM reviews WHERE request_id = ? AND reviewer_session_id = ?
+	`, requestID, sessionID).Scan(&count)
+	if err != nil {
+		return false, fmt.Errorf("checking duplicate review: %w", err)
+	}
+	return count > 0, nil
 }
 
 // HasReviewerAlreadyReviewed checks if the reviewer has already reviewed the request.
