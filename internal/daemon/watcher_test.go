@@ -205,10 +205,10 @@ func TestWatcher_NilReceiver_Stop(t *testing.T) {
 }
 
 func TestWatcher_Start_NilWatcher(t *testing.T) {
-	w := &Watcher{} // watcher field is nil
+	var w *Watcher
 	err := w.Start(context.Background())
 	if err == nil {
-		t.Fatal("expected error when starting uninitialized watcher")
+		t.Fatal("expected error when starting nil watcher")
 	}
 }
 

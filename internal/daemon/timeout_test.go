@@ -448,3 +448,51 @@ func TestEscapePowerShellDoubleQuoted(t *testing.T) {
 		}
 	}
 }
+
+func TestTimeoutHandler_WithNotifications(t *testing.T) {
+	database := testutil.TempDB(t)
+
+	session := &db.Session{
+		ID:          "sess-notify",
+		AgentName:   "TestAgent",
+		Program:     "test",
+		Model:       "test-model",
+		ProjectPath: "/test/project",
+	}
+	if err := database.CreateSession(session); err != nil {
+		t.Fatalf("failed to create session: %v", err)
+	}
+
+	expiredAt := time.Now().Add(-1 * time.Hour)
+	req := &db.Request{
+		ID:                 "req-notify",
+		ProjectPath:        "/test/project",
+		Command:            db.CommandSpec{Raw: "rm -rf /", Cwd: "/", Shell: true},
+		RiskTier:           db.RiskTierDangerous,
+		RequestorSessionID: "sess-notify",
+		RequestorAgent:     "TestAgent",
+		RequestorModel:     "test-model",
+		Justification:      db.Justification{Reason: "test"},
+		Status:             db.StatusPending,
+		MinApprovals:       1,
+		ExpiresAt:          &expiredAt,
+	}
+	if err := database.CreateRequest(req); err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+
+	// Enable notifications
+	cfg := TimeoutHandlerConfig{
+		CheckInterval: time.Second,
+		Action:        TimeoutActionEscalate,
+		DesktopNotify: true, // Enabled
+		Logger:        nil,
+	}
+	handler := NewTimeoutHandler(database, cfg)
+
+	// This should attempt to send notification
+	// We expect it to succeed or fail gracefully (log error)
+	if err := handler.HandleExpiredRequest(req); err != nil {
+		t.Fatalf("HandleExpiredRequest failed: %v", err)
+	}
+}

@@ -366,3 +366,44 @@ func TestTCPServer_ValidateAuthError(t *testing.T) {
 		t.Fatalf("expected connection to be rejected when auth validator returns error")
 	}
 }
+
+func TestNewTCPServer_InvalidAddress(t *testing.T) {
+	logger := log.New(io.Discard)
+	_, err := NewTCPServer(TCPServerOptions{
+		Addr: "invalid-address",
+	}, logger)
+	if err == nil {
+		t.Error("expected error for invalid address")
+	}
+}
+
+func TestNewTCPServer_AddressInUse(t *testing.T) {
+	// Start a listener on a random port
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	
+	addr := l.Addr().String()
+	
+	logger := log.New(io.Discard)
+	_, err = NewTCPServer(TCPServerOptions{
+		Addr: addr,
+	}, logger)
+	if err == nil {
+		t.Error("expected error when address is in use")
+	}
+}
+
+func TestExtractRemoteIP_HostName(t *testing.T) {
+	// "example.com:80" -> host="example.com", port="80"
+	// ParseIP("example.com") -> nil
+	ip, err := extractRemoteIP(stringAddr("example.com:80"))
+	if err == nil {
+		t.Error("expected error for hostname")
+	}
+	if ip != nil {
+		t.Errorf("expected nil IP, got %v", ip)
+	}
+}

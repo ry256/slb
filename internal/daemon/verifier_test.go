@@ -489,8 +489,6 @@ func TestVerifier_NilApprovalExpiresAt(t *testing.T) {
 	}
 }
 
-// Tests for RevertExecutingOnFailure
-
 func TestVerifier_RevertExecutingOnFailure_MissingRequestID(t *testing.T) {
 	database := setupTestDB(t)
 	v := NewVerifier(database)
