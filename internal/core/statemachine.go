@@ -13,9 +13,9 @@ const (
 	defaultApprovalTTLCritical = 10 * time.Minute
 )
 
-// ValidTransitions defines all valid state transitions.
+// validTransitions defines all valid state transitions.
 // Map key is the from state, value is a list of valid to states.
-var ValidTransitions = map[db.RequestStatus][]db.RequestStatus{
+var validTransitions = map[db.RequestStatus][]db.RequestStatus{
 	db.StatusPending: {
 		db.StatusApproved,
 		db.StatusRejected,
@@ -69,7 +69,7 @@ func CanTransition(from, to db.RequestStatus) bool {
 	}
 
 	// Check if transition is in the valid list
-	validTargets, exists := ValidTransitions[from]
+	validTargets, exists := validTransitions[from]
 	if !exists {
 		return false
 	}
@@ -154,7 +154,7 @@ func GetValidTransitions(from db.RequestStatus) []db.RequestStatus {
 	if TerminalStates[from] {
 		return nil
 	}
-	return ValidTransitions[from]
+	return validTransitions[from]
 }
 
 // IsTerminal returns true if the status is a terminal state.

@@ -37,7 +37,18 @@ func GetBranch(path string) (string, error) {
 
 // InstallHook installs the SLB pre-commit hook.
 func InstallHook(repoPath string) error {
-	hookPath := filepath.Join(repoPath, ".git", "hooks", "pre-commit")
+	absPath, err := filepath.Abs(repoPath)
+	if err != nil {
+		return err
+	}
+
+	hookPath := filepath.Join(absPath, ".git", "hooks", "pre-commit")
+
+	// Check if hook already exists
+	if _, err := os.Stat(hookPath); err == nil {
+		return os.ErrExist
+	}
+
 	hookContent := `#!/bin/sh
 # SLB pre-commit hook - validates pending approvals
 exec slb hook pre-commit "$@"
